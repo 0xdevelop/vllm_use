@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,6 +19,7 @@ import (
 	"github.com/0xdevelop/vllm-use/internal/download"
 	"github.com/0xdevelop/vllm-use/internal/gateway"
 	"github.com/0xdevelop/vllm-use/internal/gpu"
+	managementmcp "github.com/0xdevelop/vllm-use/internal/mcp"
 	"github.com/0xdevelop/vllm-use/internal/models"
 	vruntime "github.com/0xdevelop/vllm-use/internal/runtime"
 	"github.com/0xdevelop/vllm-use/internal/store"
@@ -33,7 +35,12 @@ func main() {
 	flag.StringVar(&c.HFCLI, "hf", c.HFCLI, "Hugging Face CLI executable")
 	flag.StringVar(&c.Upstream, "upstream", c.Upstream, "vLLM upstream URL")
 	flag.StringVar(&c.AdminToken, "admin-token", "", "admin token (required for non-loopback)")
+	var mcpOrigins string
+	flag.StringVar(&mcpOrigins, "mcp-allowed-origins", "", "comma-separated additional trusted MCP origins")
 	flag.Parse()
+	if mcpOrigins != "" {
+		c.MCPAllowedOrigins = strings.Split(mcpOrigins, ",")
+	}
 	if e := c.Prepare(); e != nil {
 		slog.Error("invalid configuration", "error", e)
 		os.Exit(2)
@@ -58,7 +65,10 @@ func main() {
 	dl := download.NewWithOptions(c.HFCLI, nil, c.MaxDownloadWorkers, 1000)
 	dl.SetStore(st)
 	dl.SetRoot(c.ModelsDir)
-	app := &api.Server{Models: models.New(st, c.ModelsDir), Keys: keys, GPU: gpu.New(nil), Runtime: sup, Downloads: dl, Store: st, AdminToken: c.AdminToken, RequireAdmin: true}
+	registry := models.New(st, c.ModelsDir)
+	gpuService := gpu.New(nil)
+	mcpHandler := managementmcp.New(managementmcp.Dependencies{Models: registry, Keys: keys, GPU: gpuService, Runtime: sup, Downloads: dl}, managementmcp.Options{AllowedOrigins: c.MCPAllowedOrigins})
+	app := &api.Server{Models: registry, Keys: keys, GPU: gpuService, Runtime: sup, Downloads: dl, Store: st, AdminToken: c.AdminToken, RequireAdmin: true, MCP: mcpHandler, MCPStatus: mcpHandler}
 	upstream, e := url.Parse(c.Upstream)
 	if e != nil || upstream.Scheme == "" || upstream.Host == "" {
 		slog.Error("invalid upstream URL")

@@ -27,11 +27,16 @@ type Server struct {
 	Store        *store.Store
 	AdminToken   string
 	RequireAdmin bool
+	MCP          http.Handler
+	MCPStatus    interface{ Status() any }
 }
 
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { respond(w, map[string]string{"status": "ok"}, nil) })
+	if s.MCP != nil {
+		mux.Handle("/mcp", s.MCP)
+	}
 	mux.Handle("/api/", s.admin(http.HandlerFunc(s.api)))
 	return security(mux)
 }
@@ -145,6 +150,12 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		respond(w, v, e)
 	case r.Method == "GET" && p == "/api/system":
 		respond(w, map[string]any{"go_version": runtime.Version(), "goos": runtime.GOOS, "goarch": runtime.GOARCH, "cpus": runtime.NumCPU()}, nil)
+	case r.Method == "GET" && p == "/api/mcp":
+		if s.MCPStatus == nil {
+			respond(w, nil, store.ErrNotFound)
+			return
+		}
+		respond(w, s.MCPStatus.Status(), nil)
 	case r.Method == "GET" && (p == "/api/runtime" || p == "/api/runtime/status" || p == "/api/runtime/logs"):
 		respond(w, s.Runtime.State(), nil)
 	case r.Method == "POST" && (p == "/api/runtime/start" || p == "/api/runtime/restart" || p == "/api/runtime/switch"):

@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -18,12 +19,23 @@ type Config struct {
 	HealthInterval                                                    time.Duration
 	MaxDownloadWorkers                                                int
 	UpstreamAPIKey                                                    string
+	MCPAllowedOrigins                                                 []string
 }
 
 func Default() Config {
 	d, _ := os.UserConfigDir()
 	d = filepath.Join(d, "vllm-use")
-	return Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "vllm-use.db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", Upstream: "http://127.0.0.1:8000", AdminToken: os.Getenv("VLLM_USE_ADMIN_TOKEN"), UpstreamAPIKey: os.Getenv("VLLM_USE_UPSTREAM_API_KEY"), ReadinessTimeout: 2 * time.Minute, ShutdownGrace: 10 * time.Second, HealthInterval: 200 * time.Millisecond, MaxDownloadWorkers: 2}
+	return Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "vllm-use.db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", Upstream: "http://127.0.0.1:8000", AdminToken: os.Getenv("VLLM_USE_ADMIN_TOKEN"), UpstreamAPIKey: os.Getenv("VLLM_USE_UPSTREAM_API_KEY"), MCPAllowedOrigins: splitList(os.Getenv("VLLM_USE_MCP_ALLOWED_ORIGINS")), ReadinessTimeout: 2 * time.Minute, ShutdownGrace: 10 * time.Second, HealthInterval: 200 * time.Millisecond, MaxDownloadWorkers: 2}
+}
+
+func splitList(s string) []string {
+	var out []string
+	for _, v := range strings.Split(s, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func (c Config) Validate() error {
