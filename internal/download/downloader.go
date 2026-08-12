@@ -50,7 +50,9 @@ const (
 
 type Job struct {
 	ID          string     `json:"id"`
+	ModelID     string     `json:"model_id,omitempty"`
 	Repo        string     `json:"repository"`
+	Revision    string     `json:"revision,omitempty"`
 	Destination string     `json:"destination"`
 	State       State      `json:"state"`
 	Progress    float64    `json:"progress"`
@@ -70,6 +72,7 @@ type Downloader struct {
 	maxLogs int
 	store   *store.Store
 	root    string
+	hfHome  string
 }
 
 func (d *Downloader) SetStore(s *store.Store) {
@@ -79,6 +82,11 @@ func (d *Downloader) SetStore(s *store.Store) {
 	d.restore()
 }
 func (d *Downloader) SetRoot(root string) { d.mu.Lock(); d.root = filepath.Clean(root); d.mu.Unlock() }
+func (d *Downloader) SetHFHome(home string) {
+	d.mu.Lock()
+	d.hfHome = strings.TrimSpace(home)
+	d.mu.Unlock()
+}
 
 func New(cli string, r Runner) *Downloader {
 	if r == nil {
@@ -99,18 +107,55 @@ func NewWithOptions(cli string, r Runner, maxWorkers, maxLogs int) *Downloader {
 	return &Downloader{cli: cli, runner: r, jobs: map[string]*Job{}, workers: make(chan struct{}, maxWorkers), maxLogs: maxLogs}
 }
 func (d *Downloader) Download(parent context.Context, id, repo, dest, token string) (*Job, error) {
+	return d.DownloadRequest(parent, Request{ID: id, Repository: repo, Destination: dest, Token: token})
+}
+
+type Request struct {
+	ID          string `json:"id"`
+	ModelID     string `json:"model_id,omitempty"`
+	Repository  string `json:"repository"`
+	Revision    string `json:"revision,omitempty"`
+	Destination string `json:"destination"`
+	Token       string `json:"token,omitempty"`
+}
+
+func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*Job, error) {
+	id, repo, dest, token := request.ID, request.Repository, request.Destination, request.Token
 	id = strings.TrimSpace(id)
 	if id == "" || len(id) > 128 || strings.ContainsAny(id, "\\/\x00\n\r\t") {
 		return nil, errors.New("invalid download id")
 	}
 	repo = strings.TrimSpace(repo)
+	revision := strings.TrimSpace(request.Revision)
 	parts := strings.Split(repo, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.HasPrefix(repo, "-") || strings.ContainsAny(repo, " \\\x00\n\r\t") || strings.Contains(repo, "..") {
 		return nil, errors.New("invalid repo")
 	}
+	if strings.HasPrefix(revision, "-") || strings.ContainsAny(revision, "\x00\n\r\t ") {
+		return nil, errors.New("invalid revision")
+	}
 	d.mu.RLock()
 	root := d.root
+	st := d.store
 	d.mu.RUnlock()
+	modelID := strings.TrimSpace(request.ModelID)
+	if modelID != "" {
+		if st == nil {
+			return nil, errors.New("model integration unavailable")
+		}
+		var kind, modelRepo, modelRevision string
+		if err := st.DB.QueryRowContext(parent, `SELECT kind,repository,revision FROM models WHERE id=?`, modelID).Scan(&kind, &modelRepo, &modelRevision); err != nil {
+			return nil, errors.New("registered model not found")
+		}
+		if kind != "huggingface" || modelRepo != repo {
+			return nil, errors.New("download does not match registered model")
+		}
+		if revision == "" {
+			revision = modelRevision
+		} else if modelRevision != "" && revision != modelRevision {
+			return nil, errors.New("download revision does not match registered model")
+		}
+	}
 	if root != "" {
 		if !filepath.IsAbs(dest) {
 			return nil, errors.New("download destination must be absolute")
@@ -164,11 +209,12 @@ func (d *Downloader) Download(parent context.Context, id, repo, dest, token stri
 		}
 	}
 	ctx, cancel := context.WithCancel(parent)
-	j := &Job{ID: id, Repo: repo, Destination: dest, State: Running, cancel: cancel, secret: token}
+	j := &Job{ID: id, ModelID: modelID, Repo: repo, Revision: revision, Destination: dest, State: Running, cancel: cancel, secret: token}
 	now := time.Now().UTC()
 	j.StartedAt = &now
 	d.jobs[id] = j
 	d.persistLocked(j)
+	d.updateModelLocked(j, Running)
 	d.mu.Unlock()
 	select {
 	case d.workers <- struct{}{}:
@@ -180,13 +226,18 @@ func (d *Downloader) Download(parent context.Context, id, repo, dest, token stri
 		return j, errors.New("maximum concurrent downloads reached")
 	}
 	args := []string{"download", repo, "--local-dir", dest}
+	if revision != "" {
+		args = append(args, "--revision", revision)
+	}
 	cmd := d.runner.CommandContext(ctx, d.cli, args...)
 	if x, ok := cmd.(interface{ SetEnv([]string) }); ok {
 		env := os.Environ()
 		if token != "" {
-			env = append(env, "HF_TOKEN="+token)
+			env = setEnvironment(env, "HF_TOKEN", token)
 		}
-		env = append(env, "HF_HOME="+dest)
+		if d.hfHome != "" {
+			env = setEnvironment(env, "HF_HOME", d.hfHome)
+		}
 		x.SetEnv(env)
 	}
 	out, e := cmd.StdoutPipe()
@@ -228,7 +279,12 @@ func (d *Downloader) Download(parent context.Context, id, repo, dest, token stri
 			d.finish(j, Succeeded, nil)
 		}
 	}()
-	return j, nil
+	d.mu.RLock()
+	response := *j
+	response.Logs = append([]string(nil), j.Logs...)
+	response.cancel = nil
+	d.mu.RUnlock()
+	return &response, nil
 }
 
 var pct = regexp.MustCompile(`([0-9]{1,3}(?:\.[0-9]+)?)%`)
@@ -273,6 +329,69 @@ func (d *Downloader) finish(j *Job, s State, e error) {
 	j.cancel = nil
 	j.secret = ""
 	d.persistLocked(j)
+	d.updateModelLocked(j, s)
+}
+
+func setEnvironment(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, item := range env {
+		if !strings.HasPrefix(item, prefix) {
+			out = append(out, item)
+		}
+	}
+	return append(out, prefix+value)
+}
+
+func (d *Downloader) updateModelLocked(j *Job, state State) {
+	if d.store == nil || j.ModelID == "" {
+		return
+	}
+	status := "error"
+	localPath := ""
+	var size int64
+	switch state {
+	case Running, Pending:
+		status = "downloading"
+	case Succeeded:
+		status = "ready"
+		if measured, err := directorySize(j.Destination); err == nil {
+			localPath, size = j.Destination, measured
+		}
+	case Canceled:
+		status = "canceled"
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if status == "ready" && localPath != "" {
+		_, _ = d.store.DB.ExecContext(context.Background(), `UPDATE models SET status=?,local_path=?,size_bytes=?,updated_at=? WHERE id=?`, status, localPath, size, now, j.ModelID)
+	} else {
+		_, _ = d.store.DB.ExecContext(context.Background(), `UPDATE models SET status=?,updated_at=? WHERE id=?`, status, now, j.ModelID)
+	}
+}
+
+func directorySize(root string) (int64, error) {
+	var size int64
+	err := filepath.WalkDir(root, func(_ string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !entry.Type().IsRegular() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		size += info.Size()
+		return nil
+	})
+	return size, err
 }
 func (d *Downloader) Cancel(id string) error {
 	d.mu.Lock()
@@ -306,7 +425,7 @@ func (d *Downloader) restore() {
 	if d.store == nil {
 		return
 	}
-	rows, err := d.store.DB.Query(`SELECT id,repository,destination,state,progress,error,logs,started_at,finished_at FROM downloads ORDER BY id`)
+	rows, err := d.store.DB.Query(`SELECT id,COALESCE(model_id,''),repository,revision,destination,state,progress,error,logs,started_at,finished_at FROM downloads ORDER BY id`)
 	if err != nil {
 		return
 	}
@@ -315,7 +434,7 @@ func (d *Downloader) restore() {
 		var j Job
 		var state, logs string
 		var started, finished *string
-		if rows.Scan(&j.ID, &j.Repo, &j.Destination, &state, &j.Progress, &j.Error, &logs, &started, &finished) != nil {
+		if rows.Scan(&j.ID, &j.ModelID, &j.Repo, &j.Revision, &j.Destination, &state, &j.Progress, &j.Error, &logs, &started, &finished) != nil {
 			continue
 		}
 		j.State = State(state)
@@ -338,6 +457,7 @@ func (d *Downloader) restore() {
 		d.jobs[j.ID] = &j
 		if state == string(Running) || state == string(Pending) {
 			d.persistLocked(&j)
+			d.updateModelLocked(&j, Canceled)
 		}
 	}
 }
@@ -368,7 +488,7 @@ func (d *Downloader) Retry(ctx context.Context, id, token string) (*Job, error) 
 	if j.State == Running {
 		return nil, errors.New("download running")
 	}
-	return d.Download(ctx, id, j.Repo, j.Destination, token)
+	return d.DownloadRequest(ctx, Request{ID: id, ModelID: j.ModelID, Repository: j.Repo, Revision: j.Revision, Destination: j.Destination, Token: token})
 }
 func (d *Downloader) persist(j *Job) { d.mu.RLock(); defer d.mu.RUnlock(); d.persistLocked(j) }
 func (d *Downloader) persistLocked(j *Job) {
@@ -384,5 +504,12 @@ func (d *Downloader) persistLocked(j *Job) {
 	if j.FinishedAt != nil {
 		finished = j.FinishedAt.Format(time.RFC3339Nano)
 	}
-	_, _ = d.store.DB.ExecContext(context.Background(), `INSERT INTO downloads(id,repository,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET state=excluded.state,progress=excluded.progress,error=excluded.error,logs=excluded.logs,started_at=excluded.started_at,finished_at=excluded.finished_at,updated_at=excluded.updated_at`, j.ID, j.Repo, j.Destination, string(j.State), j.Progress, j.Error, string(logs), started, finished, now, now)
+	_, _ = d.store.DB.ExecContext(context.Background(), `INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET model_id=excluded.model_id,repository=excluded.repository,revision=excluded.revision,destination=excluded.destination,state=excluded.state,progress=excluded.progress,error=excluded.error,logs=excluded.logs,started_at=excluded.started_at,finished_at=excluded.finished_at,updated_at=excluded.updated_at`, j.ID, nullValue(j.ModelID), j.Repo, j.Revision, j.Destination, string(j.State), j.Progress, j.Error, string(logs), started, finished, now, now)
+}
+
+func nullValue(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }

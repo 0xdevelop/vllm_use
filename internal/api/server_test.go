@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,6 +24,21 @@ type apiGPU struct{}
 
 func (apiGPU) Output(context.Context, string, ...string) ([]byte, error) { return nil, nil }
 
+type apiDownloadRunner struct{}
+type apiDownloadCommand struct{}
+
+func (apiDownloadRunner) CommandContext(context.Context, string, ...string) download.Command {
+	return apiDownloadCommand{}
+}
+func (apiDownloadCommand) StdoutPipe() (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (apiDownloadCommand) StderrPipe() (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (apiDownloadCommand) Start() error { return nil }
+func (apiDownloadCommand) Wait() error  { return nil }
+
 func testServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -35,8 +51,9 @@ func testServer(t *testing.T) (*Server, string) {
 	if err := os.Mkdir(modelsRoot, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	dl := download.NewWithOptions("unused", nil, 1, 10)
+	dl := download.NewWithOptions("unused", apiDownloadRunner{}, 1, 10)
 	dl.SetRoot(modelsRoot)
+	dl.SetStore(st)
 	sup := vruntime.NewSupervisor("unused", time.Millisecond, time.Millisecond)
 	s := &Server{Models: models.New(st, modelsRoot), Keys: auth.New(st), GPU: gpu.New(apiGPU{}), Runtime: sup, Switch: vruntime.NewSwitchService(sup), Downloads: dl, Store: st, AdminToken: "admin", RequireAdmin: true, Web: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("web")) })}
 	return s, modelsRoot
@@ -131,9 +148,27 @@ func TestMajorAdminRoutesAndJSONContract(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("unknown download field accepted: %d %s", w.Code, w.Body.String())
 	}
+	w = request(t, h, http.MethodPost, "/api/downloads", "admin", `{"id":"linked","model_id":`+jsonString(modelID)+`,"repository":"owner/model","revision":"main","destination":`+jsonString(destination)+`}`)
+	linked := decodeObject(t, w)
+	if w.Code != http.StatusOK || linked["model_id"] != modelID || linked["revision"] != "main" || linked["repository"] != "owner/model" {
+		t.Fatalf("linked download contract: %d %#v", w.Code, linked)
+	}
+	for deadline := time.Now().Add(time.Second); ; time.Sleep(time.Millisecond) {
+		job, _ := s.Downloads.Status("linked")
+		if job.State != download.Running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("linked download did not finish")
+		}
+	}
 	w = request(t, h, http.MethodPost, "/api/runtime/start", "admin", `{"options":{"model":"m","host":"127.0.0.1","port":8000,"tensor_parallel":1,"served_model_name":"m","extra_args":[],"TensorParallel":2},"health_url":""}`)
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("unknown runtime field accepted: %d %s", w.Code, w.Body.String())
+	}
+	w = request(t, h, http.MethodPost, "/api/runtime/start", "admin", `{"options":{"model":"m","host":"127.0.0.1","port":8000,"tensor_parallel":1,"pipeline_parallel_size":1,"gpu_devices":[0],"gpu_memory_utilization":0.9,"max_model_len":4096,"dtype":"auto","quantization":"awq","trust_remote_code":true,"tool_call_parser":"hermes","reasoning_parser":"deepseek_r1","enable_auto_tool_choice":true,"served_model_name":"m","extra_args":[]},"health_url":"http://127.0.0.1:8000/health"}`)
+	if w.Code == http.StatusBadRequest && decodeObject(t, w)["error"] == "invalid JSON" {
+		t.Fatalf("Web runtime contract rejected: %s", w.Body.String())
 	}
 	w = request(t, h, http.MethodDelete, "/api/keys/"+keyID, "admin", "")
 	if w.Code != http.StatusOK {

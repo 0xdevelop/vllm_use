@@ -38,6 +38,8 @@ func run() int {
 	flag.StringVar(&c.ModelsDir, "models-dir", c.ModelsDir, "managed models directory")
 	flag.StringVar(&c.VLLMBinary, "vllm", c.VLLMBinary, "vLLM executable")
 	flag.StringVar(&c.HFCLI, "hf", c.HFCLI, "Hugging Face CLI executable")
+	flag.StringVar(&c.HFHome, "hf-home", c.HFHome, "Hugging Face cache/config directory (preserves inherited HF_HOME when unset)")
+	flag.IntVar(&c.MaxDownloadWorkers, "max-download-workers", c.MaxDownloadWorkers, "maximum concurrent Hugging Face downloads")
 	flag.StringVar(&c.Upstream, "upstream", c.Upstream, "vLLM upstream URL")
 	flag.StringVar(&c.AdminToken, "admin-token", c.AdminToken, "admin token (required for management API access)")
 	var mcpOrigins string
@@ -71,6 +73,7 @@ func run() int {
 	dl := download.NewWithOptions(c.HFCLI, nil, c.MaxDownloadWorkers, 1000)
 	dl.SetStore(st)
 	dl.SetRoot(c.ModelsDir)
+	dl.SetHFHome(c.HFHome)
 	registry := models.New(st, c.ModelsDir)
 	gpuService := gpu.New(nil)
 	mcpHandler := managementmcp.New(managementmcp.Dependencies{Models: registry, Keys: keys, GPU: gpuService, Runtime: sup, Switch: switcher, Downloads: dl}, managementmcp.Options{AllowedOrigins: c.MCPAllowedOrigins})

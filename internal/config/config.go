@@ -8,24 +8,31 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
 
 type Config struct {
-	Listen, DataDir, Database, ModelsDir, VLLMBinary, HFCLI, Upstream string
-	AdminToken                                                        string
-	ReadinessTimeout, ShutdownGrace                                   time.Duration
-	HealthInterval                                                    time.Duration
-	MaxDownloadWorkers                                                int
-	UpstreamAPIKey                                                    string
-	MCPAllowedOrigins                                                 []string
+	Listen, DataDir, Database, ModelsDir, VLLMBinary, HFCLI, HFHome, Upstream string
+	AdminToken                                                                string
+	ReadinessTimeout, ShutdownGrace                                           time.Duration
+	HealthInterval                                                            time.Duration
+	MaxDownloadWorkers                                                        int
+	UpstreamAPIKey                                                            string
+	MCPAllowedOrigins                                                         []string
 }
 
 func Default() Config {
 	d, _ := os.UserConfigDir()
 	d = filepath.Join(d, "vllm-use")
-	return Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "vllm-use.db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", Upstream: "http://127.0.0.1:8000", AdminToken: os.Getenv("VLLM_USE_ADMIN_TOKEN"), UpstreamAPIKey: os.Getenv("VLLM_USE_UPSTREAM_API_KEY"), MCPAllowedOrigins: splitList(os.Getenv("VLLM_USE_MCP_ALLOWED_ORIGINS")), ReadinessTimeout: 2 * time.Minute, ShutdownGrace: 10 * time.Second, HealthInterval: 200 * time.Millisecond, MaxDownloadWorkers: 2}
+	workers := 2
+	if raw := os.Getenv("VLLM_USE_MAX_DOWNLOAD_WORKERS"); raw != "" {
+		if value, err := strconv.Atoi(raw); err == nil {
+			workers = value
+		}
+	}
+	return Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "vllm-use.db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", HFHome: os.Getenv("VLLM_USE_HF_HOME"), Upstream: "http://127.0.0.1:8000", AdminToken: os.Getenv("VLLM_USE_ADMIN_TOKEN"), UpstreamAPIKey: os.Getenv("VLLM_USE_UPSTREAM_API_KEY"), MCPAllowedOrigins: splitList(os.Getenv("VLLM_USE_MCP_ALLOWED_ORIGINS")), ReadinessTimeout: 2 * time.Minute, ShutdownGrace: 10 * time.Second, HealthInterval: 200 * time.Millisecond, MaxDownloadWorkers: workers}
 }
 
 func splitList(s string) []string {
@@ -55,8 +62,11 @@ func (c Config) Validate() error {
 	if c.ReadinessTimeout <= 0 || c.ShutdownGrace <= 0 || c.HealthInterval < 0 {
 		return errors.New("timeouts must be positive")
 	}
-	if c.MaxDownloadWorkers < 0 || c.MaxDownloadWorkers > 64 {
+	if c.MaxDownloadWorkers < 1 || c.MaxDownloadWorkers > 64 {
 		return errors.New("max download workers must be between 1 and 64")
+	}
+	if c.HFHome != "" && !filepath.IsAbs(c.HFHome) {
+		return errors.New("HF home must be absolute")
 	}
 	host, _, err := net.SplitHostPort(c.Listen)
 	if err != nil {
@@ -103,7 +113,11 @@ func (c Config) Prepare() error {
 	if err := c.Validate(); err != nil {
 		return err
 	}
-	for _, d := range []string{c.DataDir, c.ModelsDir} {
+	directories := []string{c.DataDir, c.ModelsDir}
+	if c.HFHome != "" {
+		directories = append(directories, c.HFHome)
+	}
+	for _, d := range directories {
 		if err := os.MkdirAll(d, 0700); err != nil {
 			return err
 		}

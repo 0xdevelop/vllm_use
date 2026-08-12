@@ -127,6 +127,23 @@ func TestLargeLogLineAndIgnoredTERMRestart(t *testing.T) {
 	}
 }
 
+func TestGPUDevicesUseCUDAVisibleDevices(t *testing.T) {
+	output := filepath.Join(t.TempDir(), "cuda.txt")
+	s := NewSupervisor(script(t, `printf '%s' "$CUDA_VISIBLE_DEVICES" > "`+output+`"; trap 'exit 0' TERM; while :; do sleep 1; done`), time.Second, time.Second)
+	o := readyOptions(t, s)
+	o.GPUDevices = []int{2, 5}
+	if err := s.Start(context.Background(), o, ""); err != nil {
+		t.Fatal(err)
+	}
+	eventually(t, func() bool {
+		b, err := os.ReadFile(output)
+		return err == nil && string(b) == "2,5"
+	})
+	if err := s.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestUnexpectedLeaderExitCleansChildProcess(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	s := NewSupervisor(script(t, `sleep 30 & echo $! > "`+pidFile+`"; exit 7`), time.Second, time.Second)

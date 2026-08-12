@@ -150,16 +150,11 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && p == "/api/downloads":
 		respond(w, s.Downloads.List(), nil)
 	case r.Method == "POST" && p == "/api/downloads":
-		var in struct {
-			ID          string `json:"id"`
-			Repository  string `json:"repository"`
-			Destination string `json:"destination"`
-			Token       string `json:"token"`
-		}
+		var in download.Request
 		if !decode(w, r, &in) {
 			return
 		}
-		v, e := s.Downloads.Download(context.WithoutCancel(r.Context()), in.ID, in.Repository, in.Destination, in.Token)
+		v, e := s.Downloads.DownloadRequest(context.WithoutCancel(r.Context()), in)
 		respond(w, v, e)
 	case strings.HasPrefix(p, "/api/downloads/"):
 		s.downloadAPI(w, r)
@@ -178,22 +173,24 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		respond(w, s.Runtime.State(), nil)
 	case r.Method == "POST" && (p == "/api/runtime/start" || p == "/api/runtime/restart"):
 		var in struct {
-			Options vruntime.Options `json:"options"`
+			Options   vruntime.Options `json:"options"`
+			HealthURL string           `json:"health_url,omitempty"`
 		}
 		if !decode(w, r, &in) {
 			return
 		}
 		var e error
 		if p == "/api/runtime/start" {
-			e = s.Runtime.Start(r.Context(), in.Options, "")
+			e = s.Runtime.Start(r.Context(), in.Options, in.HealthURL)
 		} else {
-			e = s.Runtime.Restart(r.Context(), in.Options, "")
+			e = s.Runtime.Restart(r.Context(), in.Options, in.HealthURL)
 		}
 		respond(w, s.Runtime.State(), e)
 	case r.Method == "POST" && p == "/api/runtime/switch":
 		var in struct {
-			ModelID string           `json:"model_id"`
-			Options vruntime.Options `json:"options"`
+			ModelID   string           `json:"model_id"`
+			Options   vruntime.Options `json:"options"`
+			HealthURL string           `json:"health_url,omitempty"`
 		}
 		if !decode(w, r, &in) {
 			return
@@ -206,7 +203,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			respond(w, nil, errors.New("model_id is required"))
 			return
 		}
-		e := s.Switch.Switch(r.Context(), in.ModelID, in.Options, "")
+		e := s.Switch.Switch(r.Context(), in.ModelID, in.Options, in.HealthURL)
 		respond(w, s.Runtime.State(), e)
 	case r.Method == "POST" && p == "/api/runtime/stop":
 		e := s.Runtime.Stop(r.Context())

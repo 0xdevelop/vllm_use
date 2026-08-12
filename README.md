@@ -27,7 +27,7 @@
 - Stateless MCP Streamable HTTP at `POST /mcp`, protocol `2026-07-28`; see [MCP details](docs/MCP.md).
 - Embedded responsive Web Admin: Dashboard, Models, Runtime, GPU, API Keys, MCP, Logs, and Settings. Production needs no Bun or Node.
 
-Current limitations: Linux-only runtime supervision; NVIDIA-only GPU discovery; one runtime; no containers, distributed scheduling, users/RBAC, TLS, remote model catalog browsing, automatic vLLM installation, live application of persisted settings, or recovery of in-memory runtime/download logs after restart. A Hugging Face registration does not download files until a download operation is started.
+Current limitations: Linux-only runtime supervision; NVIDIA-only GPU discovery; one runtime; no containers, distributed scheduling, users/RBAC, TLS, remote model catalog browsing, automatic vLLM installation, live application of persisted settings, resumable interrupted downloads, or recovery of in-memory runtime/download logs after restart. A Hugging Face registration does not download files until a download operation is started; a linked download does restore its persisted relationship and marks an interrupted model/job canceled.
 
 ## Requirements and build
 

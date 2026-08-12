@@ -10,8 +10,10 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -80,6 +82,14 @@ func (s *Supervisor) start(ctx context.Context, o Options, healthURL string) err
 	}
 	runctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(runctx, s.binary, args...)
+	cmd.Env = os.Environ()
+	if len(o.GPUDevices) > 0 {
+		devices := make([]string, len(o.GPUDevices))
+		for i, device := range o.GPUDevices {
+			devices[i] = strconv.Itoa(device)
+		}
+		cmd.Env = setEnv(cmd.Env, "CUDA_VISIBLE_DEVICES", strings.Join(devices, ","))
+	}
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	out, e := cmd.StdoutPipe()
 	if e != nil {
@@ -255,6 +265,17 @@ func (s *Supervisor) Restart(ctx context.Context, o Options, h string) error {
 	}
 	return s.start(ctx, o, h)
 }
+func setEnv(env []string, key, value string) []string {
+	prefix := key + "="
+	out := make([]string, 0, len(env)+1)
+	for _, item := range env {
+		if !strings.HasPrefix(item, prefix) {
+			out = append(out, item)
+		}
+	}
+	return append(out, prefix+value)
+}
+
 func (s *Supervisor) State() State {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

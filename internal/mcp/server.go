@@ -343,7 +343,9 @@ func modelOutput(m models.Model) publicModel {
 
 type publicJob struct {
 	ID         string         `json:"id"`
+	ModelID    string         `json:"model_id,omitempty"`
 	Repository string         `json:"repository"`
+	Revision   string         `json:"revision,omitempty"`
 	State      download.State `json:"state"`
 	Progress   float64        `json:"progress"`
 	StartedAt  *time.Time     `json:"started_at,omitempty"`
@@ -364,7 +366,7 @@ func runtimeOutput(v vruntime.State) publicRuntime {
 }
 
 func jobOutput(j download.Job) publicJob {
-	return publicJob{ID: j.ID, Repository: j.Repo, State: j.State, Progress: j.Progress, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt}
+	return publicJob{ID: j.ID, ModelID: j.ModelID, Repository: j.Repo, Revision: j.Revision, State: j.State, Progress: j.Progress, StartedAt: j.StartedAt, FinishedAt: j.FinishedAt}
 }
 
 func registerTools(s *sdk.Server, d Dependencies) {
@@ -417,7 +419,9 @@ func registerTools(s *sdk.Server, d Dependencies) {
 	})
 	type downloadInput struct {
 		ID          string `json:"id"`
+		ModelID     string `json:"model_id,omitempty"`
 		Repository  string `json:"repository"`
+		Revision    string `json:"revision,omitempty"`
 		Destination string `json:"destination"`
 		Token       string `json:"token,omitempty"`
 	}
@@ -425,7 +429,7 @@ func registerTools(s *sdk.Server, d Dependencies) {
 		if err := authorized(ctx, "mcp.models"); err != nil {
 			return nil, nil, err
 		}
-		j, err := d.Downloads.Download(context.WithoutCancel(ctx), in.ID, in.Repository, in.Destination, in.Token)
+		j, err := d.Downloads.DownloadRequest(context.WithoutCancel(ctx), download.Request{ID: in.ID, ModelID: in.ModelID, Repository: in.Repository, Revision: in.Revision, Destination: in.Destination, Token: in.Token})
 		if j == nil {
 			return nil, nil, toolError(err)
 		}

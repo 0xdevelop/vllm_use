@@ -69,7 +69,7 @@ scope does not implicitly grant read access; use multiple scopes where needed.
 | --- | --- | --- |
 | `models.list`, `models.get` | `mcp.read` | Read sanitized registry metadata |
 | `models.register` | `mcp.models` | Register Hugging Face or managed local model |
-| `models.download` | `mcp.models` | Start a managed Hugging Face download |
+| `models.download` | `mcp.models` | Start a Hugging Face download; optional `model_id` links a registration and optional `revision` is passed structurally |
 | `models.download_cancel` | `mcp.models` | Cancel a download |
 | `models.delete` | `mcp.models` | Delete registration and optionally managed files |
 | `runtime.status` | `mcp.read` | Read runtime state |
