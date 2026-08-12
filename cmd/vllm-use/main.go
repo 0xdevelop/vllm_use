@@ -1,0 +1,77 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/0xdevelop/vllm-use/internal/api"
+	"github.com/0xdevelop/vllm-use/internal/auth"
+	"github.com/0xdevelop/vllm-use/internal/config"
+	"github.com/0xdevelop/vllm-use/internal/gateway"
+	"github.com/0xdevelop/vllm-use/internal/gpu"
+	"github.com/0xdevelop/vllm-use/internal/models"
+	vruntime "github.com/0xdevelop/vllm-use/internal/runtime"
+	"github.com/0xdevelop/vllm-use/internal/store"
+)
+
+func main() {
+	c := config.Default()
+	flag.StringVar(&c.Listen, "listen", c.Listen, "HTTP listen address")
+	flag.StringVar(&c.DataDir, "data-dir", c.DataDir, "private data directory")
+	flag.StringVar(&c.Database, "db", c.Database, "SQLite database path")
+	flag.StringVar(&c.ModelsDir, "models-dir", c.ModelsDir, "managed models directory")
+	flag.StringVar(&c.VLLMBinary, "vllm", c.VLLMBinary, "vLLM executable")
+	flag.StringVar(&c.HFCLI, "hf", c.HFCLI, "Hugging Face CLI executable")
+	flag.StringVar(&c.Upstream, "upstream", c.Upstream, "vLLM upstream URL")
+	flag.StringVar(&c.AdminToken, "admin-token", "", "admin token (required for non-loopback)")
+	flag.Parse()
+	if !c.IsLoopback() && c.AdminToken == "" {
+		slog.Error("admin token is required for non-loopback listen")
+		os.Exit(2)
+	}
+	if e := c.Prepare(); e != nil {
+		slog.Error("invalid configuration", "error", e)
+		os.Exit(2)
+	}
+	st, e := store.Open(c.Database)
+	if e != nil {
+		slog.Error("open database", "error", e)
+		os.Exit(1)
+	}
+	defer st.Close()
+	sup := vruntime.NewSupervisor(c.VLLMBinary, c.ShutdownGrace, c.ReadinessTimeout)
+	keys := auth.New(st)
+	app := &api.Server{Models: models.New(st, c.ModelsDir), Keys: keys, GPU: gpu.New(nil), Runtime: sup, AdminToken: c.AdminToken, RequireAdmin: !c.IsLoopback()}
+	upstream, e := url.Parse(c.Upstream)
+	if e != nil || upstream.Scheme == "" || upstream.Host == "" {
+		slog.Error("invalid upstream URL")
+		os.Exit(2)
+	}
+	proxy := gateway.New(upstream, gateway.VerifyFunc(func(ctx context.Context, key, scope string) error { _, e := keys.Verify(ctx, key, scope); return e }))
+	mux := http.NewServeMux()
+	mux.Handle("/v1/", proxy)
+	mux.Handle("/", app.Handler())
+	srv := &http.Server{Addr: c.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 0, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 1 << 20}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	go func() {
+		<-ctx.Done()
+		shut, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = sup.Stop(shut)
+		_ = srv.Shutdown(shut)
+	}()
+	slog.Info("listening", "address", c.Listen)
+	if e = srv.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
+		slog.Error("server stopped", "error", e)
+		os.Exit(1)
+	}
+}
