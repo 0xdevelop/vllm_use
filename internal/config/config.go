@@ -1,8 +1,11 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"errors"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -12,12 +15,15 @@ type Config struct {
 	Listen, DataDir, Database, ModelsDir, VLLMBinary, HFCLI, Upstream string
 	AdminToken                                                        string
 	ReadinessTimeout, ShutdownGrace                                   time.Duration
+	HealthInterval                                                    time.Duration
+	MaxDownloadWorkers                                                int
+	UpstreamAPIKey                                                    string
 }
 
 func Default() Config {
 	d, _ := os.UserConfigDir()
 	d = filepath.Join(d, "vllm-use")
-	return Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "vllm-use.db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", Upstream: "http://127.0.0.1:8000", ReadinessTimeout: 2 * time.Minute, ShutdownGrace: 10 * time.Second}
+	return Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "vllm-use.db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", Upstream: "http://127.0.0.1:8000", AdminToken: os.Getenv("VLLM_USE_ADMIN_TOKEN"), UpstreamAPIKey: os.Getenv("VLLM_USE_UPSTREAM_API_KEY"), ReadinessTimeout: 2 * time.Minute, ShutdownGrace: 10 * time.Second, HealthInterval: 200 * time.Millisecond, MaxDownloadWorkers: 2}
 }
 
 func (c Config) Validate() error {
@@ -30,8 +36,15 @@ func (c Config) Validate() error {
 	if c.VLLMBinary == "" || c.HFCLI == "" {
 		return errors.New("vllm and hf executables are required")
 	}
-	if c.ReadinessTimeout <= 0 || c.ShutdownGrace <= 0 {
+	u, err := url.Parse(c.Upstream)
+	if c.Upstream != "" && (err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https")) {
+		return errors.New("upstream must be an absolute HTTP(S) URL")
+	}
+	if c.ReadinessTimeout <= 0 || c.ShutdownGrace <= 0 || c.HealthInterval < 0 {
 		return errors.New("timeouts must be positive")
+	}
+	if c.MaxDownloadWorkers < 0 || c.MaxDownloadWorkers > 64 {
+		return errors.New("max download workers must be between 1 and 64")
 	}
 	host, _, err := net.SplitHostPort(c.Listen)
 	if err != nil {
@@ -41,6 +54,32 @@ func (c Config) Validate() error {
 		return errors.New("listen host must be an IP address or localhost")
 	}
 	return nil
+}
+
+// EnsureAdminToken creates a private bootstrap credential when none was
+// configured. The secret is never logged; an operator can read the returned
+// path and exchange/use it locally before replacing it with a scoped key.
+func (c *Config) EnsureAdminToken() (string, error) {
+	if c.AdminToken != "" {
+		return "", nil
+	}
+	p := filepath.Join(c.DataDir, "admin-bootstrap.token")
+	if b, e := os.ReadFile(p); e == nil {
+		c.AdminToken = string(b)
+		if len(c.AdminToken) < 32 {
+			return p, errors.New("bootstrap token file is invalid")
+		}
+		return p, nil
+	}
+	b := make([]byte, 32)
+	if _, e := rand.Read(b); e != nil {
+		return p, e
+	}
+	c.AdminToken = base64.RawURLEncoding.EncodeToString(b)
+	if e := os.WriteFile(p, []byte(c.AdminToken), 0600); e != nil {
+		return p, e
+	}
+	return p, os.Chmod(p, 0600)
 }
 
 func (c Config) IsLoopback() bool {
