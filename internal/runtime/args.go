@@ -19,7 +19,7 @@ type Options struct {
 }
 
 func BuildArgs(o Options) ([]string, error) {
-	if o.Model == "" {
+	if o.Model == "" || strings.HasPrefix(o.Model, "-") || strings.ContainsAny(o.Model, "\x00\n\r") {
 		return nil, errors.New("model is required")
 	}
 	if o.Port < 1 || o.Port > 65535 {
