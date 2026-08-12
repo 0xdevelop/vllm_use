@@ -453,6 +453,9 @@ func registerTools(s *sdk.Server, d Dependencies) {
 		if in.ID == "" || in.ConfirmModelID != in.ID {
 			return nil, nil, errors.New("confirm_model_id must exactly match id")
 		}
+		if d.Switch != nil && d.Switch.Active() == in.ID {
+			return nil, nil, errors.New("refusing to delete the running model")
+		}
 		err := d.Models.Delete(ctx, in.ID, in.DeleteFiles)
 		return nil, map[string]bool{"deleted": err == nil}, toolError(err)
 	})
@@ -463,8 +466,7 @@ func registerTools(s *sdk.Server, d Dependencies) {
 		return nil, runtimeOutput(d.Runtime.State()), nil
 	})
 	type runtimeInput struct {
-		Options   vruntime.Options `json:"options"`
-		HealthURL string           `json:"health_url"`
+		Options vruntime.Options `json:"options"`
 	}
 	for _, spec := range []struct {
 		name string
@@ -475,14 +477,13 @@ func registerTools(s *sdk.Server, d Dependencies) {
 			if err := authorized(ctx, "mcp.runtime"); err != nil {
 				return nil, nil, err
 			}
-			err := sp.fn(ctx, in.Options, in.HealthURL)
+			err := sp.fn(ctx, in.Options, "")
 			return nil, runtimeOutput(d.Runtime.State()), toolError(err)
 		})
 	}
 	type switchInput struct {
-		ModelID   string           `json:"model_id"`
-		Options   vruntime.Options `json:"options"`
-		HealthURL string           `json:"health_url"`
+		ModelID string           `json:"model_id"`
+		Options vruntime.Options `json:"options"`
 	}
 	sdk.AddTool(s, &sdk.Tool{Name: "runtime.switch", Description: "Stop the active model and start a different model configuration.", Annotations: annotations(false, true, false, false)}, func(ctx context.Context, _ *sdk.CallToolRequest, in switchInput) (*sdk.CallToolResult, any, error) {
 		if err := authorized(ctx, "mcp.runtime"); err != nil {
@@ -494,7 +495,7 @@ func registerTools(s *sdk.Server, d Dependencies) {
 		if strings.TrimSpace(in.ModelID) == "" {
 			return nil, nil, errors.New("model_id is required")
 		}
-		err := d.Switch.Switch(ctx, in.ModelID, in.Options, in.HealthURL)
+		err := d.Switch.Switch(ctx, in.ModelID, in.Options, "")
 		return nil, runtimeOutput(d.Runtime.State()), toolError(err)
 	})
 	sdk.AddTool(s, &sdk.Tool{Name: "runtime.stop", Description: "Stop the vLLM runtime.", Annotations: annotations(false, true, true, false)}, func(ctx context.Context, _ *sdk.CallToolRequest, _ empty) (*sdk.CallToolResult, any, error) {

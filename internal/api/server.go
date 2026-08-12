@@ -117,7 +117,12 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		v, e := s.Models.RegisterLocal(r.Context(), in.Name, in.Path)
 		respond(w, v, e)
 	case r.Method == "DELETE" && strings.HasPrefix(p, "/api/models/"):
-		e := s.Models.Delete(r.Context(), strings.TrimPrefix(p, "/api/models/"), r.URL.Query().Get("files") == "true")
+		id := strings.TrimPrefix(p, "/api/models/")
+		if s.Switch != nil && s.Switch.Active() == id {
+			respond(w, nil, errors.New("refusing to delete the running model"))
+			return
+		}
+		e := s.Models.Delete(r.Context(), id, r.URL.Query().Get("files") == "true")
 		respond(w, map[string]bool{"deleted": e == nil}, e)
 	case r.Method == "POST" && p == "/api/keys":
 		var in struct {
@@ -173,24 +178,22 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		respond(w, s.Runtime.State(), nil)
 	case r.Method == "POST" && (p == "/api/runtime/start" || p == "/api/runtime/restart"):
 		var in struct {
-			Options   vruntime.Options `json:"options"`
-			HealthURL string           `json:"health_url"`
+			Options vruntime.Options `json:"options"`
 		}
 		if !decode(w, r, &in) {
 			return
 		}
 		var e error
 		if p == "/api/runtime/start" {
-			e = s.Runtime.Start(r.Context(), in.Options, in.HealthURL)
+			e = s.Runtime.Start(r.Context(), in.Options, "")
 		} else {
-			e = s.Runtime.Restart(r.Context(), in.Options, in.HealthURL)
+			e = s.Runtime.Restart(r.Context(), in.Options, "")
 		}
 		respond(w, s.Runtime.State(), e)
 	case r.Method == "POST" && p == "/api/runtime/switch":
 		var in struct {
-			ModelID   string           `json:"model_id"`
-			Options   vruntime.Options `json:"options"`
-			HealthURL string           `json:"health_url"`
+			ModelID string           `json:"model_id"`
+			Options vruntime.Options `json:"options"`
 		}
 		if !decode(w, r, &in) {
 			return
@@ -203,7 +206,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			respond(w, nil, errors.New("model_id is required"))
 			return
 		}
-		e := s.Switch.Switch(r.Context(), in.ModelID, in.Options, in.HealthURL)
+		e := s.Switch.Switch(r.Context(), in.ModelID, in.Options, "")
 		respond(w, s.Runtime.State(), e)
 	case r.Method == "POST" && p == "/api/runtime/stop":
 		e := s.Runtime.Stop(r.Context())

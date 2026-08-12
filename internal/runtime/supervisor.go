@@ -7,9 +7,11 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os/exec"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -36,6 +38,7 @@ type State struct {
 	Logs      []string   `json:"logs"`
 }
 type Supervisor struct {
+	opMu                sync.Mutex
 	mu                  sync.RWMutex
 	binary              string
 	grace, readyTimeout time.Duration
@@ -58,11 +61,13 @@ func (s *Supervisor) SetHealthInterval(d time.Duration) {
 	}
 }
 func (s *Supervisor) Start(ctx context.Context, o Options, healthURL string) error {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	return s.start(ctx, o, healthURL)
+}
+func (s *Supervisor) start(ctx context.Context, o Options, healthURL string) error {
 	if healthURL != "" {
-		u, err := url.Parse(healthURL)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return errors.New("invalid health URL")
-		}
+		return errors.New("health_url is not accepted; readiness is derived from runtime options")
 	}
 	args, e := BuildArgs(o)
 	if e != nil {
@@ -99,14 +104,17 @@ func (s *Supervisor) Start(ctx context.Context, o Options, healthURL string) err
 	s.done = make(chan struct{})
 	s.state = State{Status: Starting, PID: cmd.Process.Pid, StartedAt: &now}
 	s.mu.Unlock()
-	go s.logs(out)
-	go s.logs(errout)
+	go s.logs(cmd, out)
+	go s.logs(cmd, errout)
 	go s.wait(cmd)
-	if healthURL != "" {
-		if e = s.poll(ctx, cmd, healthURL); e != nil {
-			_ = s.Stop(context.Background())
-			return e
-		}
+	host := o.Host
+	if host == "" {
+		host = "127.0.0.1"
+	}
+	healthURL = (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, strconv.Itoa(o.Port)), Path: "/health"}).String()
+	if e = s.poll(ctx, cmd, healthURL); e != nil {
+		_ = s.stop(context.Background())
+		return e
 	}
 	s.mu.Lock()
 	if s.cmd == cmd && s.state.Status == Starting {
@@ -150,10 +158,15 @@ func (s *Supervisor) poll(ctx context.Context, cmd *exec.Cmd, url string) error 
 		}
 	}
 }
-func (s *Supervisor) logs(r io.Reader) {
+func (s *Supervisor) logs(cmd *exec.Cmd, r io.Reader) {
 	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for sc.Scan() {
 		s.mu.Lock()
+		if s.cmd != cmd {
+			s.mu.Unlock()
+			continue
+		}
 		s.state.Logs = append(s.state.Logs, sc.Text())
 		if len(s.state.Logs) > 1000 {
 			s.state.Logs = s.state.Logs[len(s.state.Logs)-1000:]
@@ -163,6 +176,9 @@ func (s *Supervisor) logs(r io.Reader) {
 }
 func (s *Supervisor) wait(cmd *exec.Cmd) {
 	e := cmd.Wait()
+	// The leader may exit while descendants keep its pipes and process group alive.
+	// Always tear down that original group before publishing completion.
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cmd != cmd {
@@ -187,6 +203,11 @@ func (s *Supervisor) wait(cmd *exec.Cmd) {
 	}
 }
 func (s *Supervisor) Stop(ctx context.Context) error {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	return s.stop(ctx)
+}
+func (s *Supervisor) stop(ctx context.Context) error {
 	s.mu.Lock()
 	cmd := s.cmd
 	if cmd == nil {
@@ -227,10 +248,12 @@ func (s *Supervisor) Stop(ctx context.Context) error {
 	}
 }
 func (s *Supervisor) Restart(ctx context.Context, o Options, h string) error {
-	if e := s.Stop(ctx); e != nil {
+	s.opMu.Lock()
+	defer s.opMu.Unlock()
+	if e := s.stop(ctx); e != nil {
 		return e
 	}
-	return s.Start(ctx, o, h)
+	return s.start(ctx, o, h)
 }
 func (s *Supervisor) State() State {
 	s.mu.RLock()

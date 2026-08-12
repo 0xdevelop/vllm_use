@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/0xdevelop/vllm-use/internal/store"
 )
 
 type fakeRunner struct {
@@ -47,7 +49,10 @@ func (f *fakeRunner) CommandContext(_ context.Context, n string, a ...string) Co
 type fakeCmd struct {
 	out, errout string
 	wait        error
+	env         []string
 }
+
+func (f *fakeCmd) SetEnv(env []string) { f.env = append([]string(nil), env...) }
 
 func (f *fakeCmd) StdoutPipe() (io.ReadCloser, error) {
 	return io.NopCloser(strings.NewReader(f.out)), nil
@@ -70,8 +75,11 @@ func TestDownloadStructuredArgsRedactionAndStates(t *testing.T) {
 			if strings.Contains(strings.Join(j.Logs, ""), "token-secret") {
 				t.Fatal("secret leaked")
 			}
-			if r.name != "hf" || len(r.args) != 6 || r.args[0] != "download" {
+			if r.name != "hf" || len(r.args) != 4 || r.args[0] != "download" || strings.Contains(strings.Join(r.args, " "), "token-secret") {
 				t.Fatalf("args %#v", r.args)
+			}
+			if !contains(r.cmd.env, "HF_TOKEN=token-secret") {
+				t.Fatalf("token not passed in environment: %#v", r.cmd.env)
 			}
 			break
 		}
@@ -90,5 +98,68 @@ func TestDownloadStructuredArgsRedactionAndStates(t *testing.T) {
 			break
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+type unsafeCmd struct{}
+
+func (*unsafeCmd) StdoutPipe() (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (*unsafeCmd) StderrPipe() (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (*unsafeCmd) Start() error { return nil }
+func (*unsafeCmd) Wait() error  { return nil }
+
+type unsafeRunner struct{ cmd *unsafeCmd }
+
+func (r *unsafeRunner) CommandContext(context.Context, string, ...string) Command { return r.cmd }
+
+func TestTokenRequiresEnvironmentCapableRunner(t *testing.T) {
+	d := New("hf", &unsafeRunner{cmd: &unsafeCmd{}})
+	if _, err := d.Download(context.Background(), "one", "org/model", "/models/m", "secret"); err == nil || !strings.Contains(err.Error(), "securely") {
+		t.Fatalf("unsafe runner result: %v", err)
+	}
+	if len(d.List()) != 0 {
+		t.Fatal("unsafe request created a job")
+	}
+}
+
+func TestListOrderingAndPersistedRestore(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, row := range []struct{ id, state string }{{"z", "succeeded"}, {"a", "running"}} {
+		_, err = s.DB.Exec(`INSERT INTO downloads(id,repository,destination,state,progress,error,logs,created_at,updated_at) VALUES(?,?,?,?,0,'','[]',?,?)`, row.id, "org/model", "/models/"+row.id, row.state, now, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+	d.SetStore(s)
+	jobs := d.List()
+	if len(jobs) != 2 || jobs[0].ID != "a" || jobs[0].State != Canceled || jobs[1].ID != "z" || jobs[1].State != Succeeded {
+		t.Fatalf("restored jobs %#v", jobs)
+	}
+}
+
+func TestConcurrentDestinationRejected(t *testing.T) {
+	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+	d.jobs["busy"] = &Job{ID: "busy", Destination: "/models/same", State: Running}
+	if _, err := d.Download(context.Background(), "other", "org/model", "/models/same", ""); err == nil || !strings.Contains(err.Error(), "destination") {
+		t.Fatalf("same destination result: %v", err)
 	}
 }

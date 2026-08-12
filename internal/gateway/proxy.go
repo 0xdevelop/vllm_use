@@ -28,6 +28,7 @@ type Gateway struct {
 	upstreamKey string
 	aliases     map[string]string
 	record      func(context.Context, RequestMetadata)
+	recordSlots chan struct{}
 }
 type RequestMetadata struct {
 	RequestID, Method, Path, Model, KeyID, RemoteAddr string
@@ -39,6 +40,8 @@ type Options struct {
 	Aliases     map[string]string
 	Record      func(context.Context, RequestMetadata)
 }
+
+const maxJSONBody = 16 << 20
 
 func New(upstream *url.URL, v Verifier) *Gateway {
 	return NewWithOptions(upstream, v, Options{})
@@ -59,7 +62,7 @@ func NewWithOptions(upstream *url.URL, v Verifier, o Options) *Gateway {
 			r.Header.Set("Authorization", "Bearer "+o.UpstreamKey)
 		}
 	}
-	return &Gateway{proxy: p, verify: v, upstreamKey: o.UpstreamKey, aliases: o.Aliases, record: o.Record}
+	return &Gateway{proxy: p, verify: v, upstreamKey: o.UpstreamKey, aliases: o.Aliases, record: o.Record, recordSlots: make(chan struct{}, 64)}
 }
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
@@ -81,7 +84,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if g.record != nil {
 			meta.StatusCode = rw.status
 			meta.Duration = time.Since(started)
-			g.record(context.WithoutCancel(r.Context()), meta)
+			select {
+			case g.recordSlots <- struct{}{}:
+				go func() {
+					defer func() { <-g.recordSlots }()
+					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+					defer cancel()
+					g.record(ctx, meta)
+				}()
+			default:
+				// Recording is best-effort and must never apply backpressure to inference.
+			}
 		}
 	}()
 	responseChild := strings.HasPrefix(r.URL.Path, "/v1/responses/") && len(r.URL.Path) > len("/v1/responses/")
@@ -113,9 +126,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Body != nil && strings.Contains(r.Header.Get("Content-Type"), "application/json") {
-		body, e := io.ReadAll(io.LimitReader(r.Body, 16<<20))
+		body, e := io.ReadAll(io.LimitReader(r.Body, maxJSONBody+1))
 		if e == nil {
 			r.Body.Close()
+			if len(body) > maxJSONBody {
+				write(w, http.StatusRequestEntityTooLarge, "JSON body exceeds 16 MiB limit")
+				return
+			}
 			var obj map[string]any
 			if json.Unmarshal(body, &obj) == nil {
 				if m, ok := obj["model"].(string); ok {
@@ -135,12 +152,26 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type statusWriter struct {
 	http.ResponseWriter
-	status int
+	status      int
+	wroteHeader bool
 }
 
 func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
-func (s *statusWriter) WriteHeader(n int) { s.status = n; s.ResponseWriter.WriteHeader(n) }
+func (s *statusWriter) WriteHeader(n int) {
+	if s.wroteHeader {
+		return
+	}
+	s.wroteHeader = true
+	s.status = n
+	s.ResponseWriter.WriteHeader(n)
+}
+func (s *statusWriter) Write(p []byte) (int, error) {
+	if !s.wroteHeader {
+		s.WriteHeader(http.StatusOK)
+	}
+	return s.ResponseWriter.Write(p)
+}
 func (s *statusWriter) Flush() {
 	if f, ok := s.ResponseWriter.(http.Flusher); ok {
 		f.Flush()

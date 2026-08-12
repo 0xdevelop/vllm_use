@@ -3,10 +3,12 @@ package models
 import (
 	"context"
 	"errors"
-	"github.com/0xdevelop/vllm-use/internal/store"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/0xdevelop/vllm-use/internal/store"
 )
 
 func TestRegistryBoundariesAndCRUD(t *testing.T) {
@@ -40,6 +42,19 @@ func TestRegistryBoundariesAndCRUD(t *testing.T) {
 	}
 	if e = r.Delete(context.Background(), h.ID, true); e == nil {
 		t.Fatal("deleted HF files")
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, e = s.DB.Exec(`INSERT INTO runtime_configs(id,name,model_id,options_json,active,created_at,updated_at) VALUES('active','active',?,'{}',1,?,?)`, m.ID, now, now); e != nil {
+		t.Fatal(e)
+	}
+	if e = r.Delete(context.Background(), m.ID, true); e == nil {
+		t.Fatal("deleted active model")
+	}
+	if _, e = os.Stat(local); e != nil {
+		t.Fatalf("active model files moved: %v", e)
+	}
+	if _, e = s.DB.Exec(`DELETE FROM runtime_configs WHERE id='active'`); e != nil {
+		t.Fatal(e)
 	}
 	if e = r.Delete(context.Background(), m.ID, true); e != nil {
 		t.Fatal(e)

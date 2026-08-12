@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"errors"
+	"net"
 	"strconv"
 	"strings"
 )
@@ -28,6 +29,10 @@ func BuildArgs(o Options) ([]string, error) {
 	}
 	if o.Host == "" {
 		o.Host = "127.0.0.1"
+	}
+	ip := net.ParseIP(o.Host)
+	if o.Host != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		return nil, errors.New("runtime host must be a loopback address")
 	}
 	a := []string{"serve", o.Model, "--host", o.Host, "--port", strconv.Itoa(o.Port)}
 	if o.TensorParallel > 0 {

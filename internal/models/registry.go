@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/0xdevelop/vllm-use/internal/store"
@@ -32,9 +33,12 @@ type Model struct {
 type Registry struct {
 	store *store.Store
 	root  string
+	mu    sync.Mutex
 }
 
-func New(s *store.Store, root string) *Registry { return &Registry{s, filepath.Clean(root)} }
+func New(s *store.Store, root string) *Registry {
+	return &Registry{store: s, root: filepath.Clean(root)}
+}
 func newID() (string, error) {
 	b := make([]byte, 16)
 	if _, err := rand.Read(b); err != nil {
@@ -152,7 +156,7 @@ func (r *Registry) Scan(ctx context.Context) ([]Model, error) {
 	}
 	out := []Model{}
 	for _, e := range entries {
-		if !e.IsDir() || e.Type()&os.ModeSymlink != 0 {
+		if e.Name() == ".quarantine" || !e.IsDir() || e.Type()&os.ModeSymlink != 0 {
 			continue
 		}
 		p := filepath.Join(r.root, e.Name())
@@ -176,6 +180,8 @@ func (r *Registry) Scan(ctx context.Context) ([]Model, error) {
 	return out, nil
 }
 func (r *Registry) Delete(ctx context.Context, id string, files bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	m, err := r.Get(ctx, id)
 	if err != nil {
 		return err
@@ -185,6 +191,17 @@ func (r *Registry) Delete(ctx context.Context, id string, files bool) error {
 		return fmt.Errorf("begin delete: %w", err)
 	}
 	defer tx.Rollback()
+	var active, downloading int
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_configs WHERE model_id=? AND active=1`, id).Scan(&active); err != nil {
+		return fmt.Errorf("check active runtime: %w", err)
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM downloads WHERE (model_id=? OR destination=?) AND state IN ('pending','running')`, id, m.LocalPath).Scan(&downloading); err != nil {
+		return fmt.Errorf("check downloads: %w", err)
+	}
+	if active > 0 || downloading > 0 {
+		return errors.New("refusing to delete a running or downloading model")
+	}
+	var quarantined, original string
 	if files {
 		if m.LocalPath == "" {
 			return errors.New("model has no managed files")
@@ -196,7 +213,14 @@ func (r *Registry) Delete(ctx context.Context, id string, files bool) error {
 		if safe == r.root {
 			return errors.New("refusing to delete models root")
 		}
-		rel, _ := filepath.Rel(r.root, safe)
+		rootReal, er := filepath.EvalSymlinks(r.root)
+		if er != nil {
+			return fmt.Errorf("resolve models root: %w", er)
+		}
+		if safe == rootReal {
+			return errors.New("refusing to delete models root")
+		}
+		rel, _ := filepath.Rel(rootReal, safe)
 		if rel == "." || strings.HasPrefix(rel, "..") {
 			return errors.New("model files are outside configured root")
 		}
@@ -207,19 +231,49 @@ func (r *Registry) Delete(ctx context.Context, id string, files bool) error {
 		if st.Mode()&os.ModeSymlink != 0 {
 			return errors.New("refusing to delete symlink")
 		}
-		if er = os.RemoveAll(safe); er != nil {
-			return fmt.Errorf("delete model files: %w", er)
+		qroot := filepath.Join(rootReal, ".quarantine")
+		if er = os.Mkdir(qroot, 0700); er != nil && !errors.Is(er, os.ErrExist) {
+			return fmt.Errorf("create deletion quarantine: %w", er)
+		}
+		qst, er := os.Lstat(qroot)
+		if er != nil || !qst.IsDir() || qst.Mode()&os.ModeSymlink != 0 {
+			return errors.New("deletion quarantine is not a private directory")
+		}
+		if er = os.Chmod(qroot, 0700); er != nil {
+			return fmt.Errorf("secure deletion quarantine: %w", er)
+		}
+		quarantined = filepath.Join(qroot, id+"-"+filepath.Base(safe))
+		if _, er = os.Lstat(quarantined); !errors.Is(er, os.ErrNotExist) {
+			return errors.New("model deletion quarantine target already exists")
+		}
+		original = safe
+		if er = os.Rename(original, quarantined); er != nil {
+			return fmt.Errorf("stage model files for deletion: %w", er)
 		}
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM models WHERE id=?`, id)
 	if err != nil {
+		if quarantined != "" {
+			_ = os.Rename(quarantined, original)
+		}
 		return fmt.Errorf("delete model: %w", err)
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
 		return store.ErrNotFound
 	}
-	return tx.Commit()
+	if err = tx.Commit(); err != nil {
+		if quarantined != "" {
+			_ = os.Rename(quarantined, original)
+		}
+		return fmt.Errorf("commit model deletion: %w", err)
+	}
+	if quarantined != "" {
+		if err = os.RemoveAll(quarantined); err != nil {
+			return fmt.Errorf("model registration deleted; quarantined files remain: %w", err)
+		}
+	}
+	return nil
 }
 func (r *Registry) safeExisting(path string) (string, error) {
 	if !filepath.IsAbs(path) {

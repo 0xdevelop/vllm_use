@@ -27,6 +27,10 @@ import (
 )
 
 func main() {
+	os.Exit(run())
+}
+
+func run() int {
 	c := config.Default()
 	flag.StringVar(&c.Listen, "listen", c.Listen, "HTTP listen address")
 	flag.StringVar(&c.DataDir, "data-dir", c.DataDir, "private data directory")
@@ -44,12 +48,12 @@ func main() {
 	}
 	if e := c.Prepare(); e != nil {
 		slog.Error("invalid configuration", "error", e)
-		os.Exit(2)
+		return 2
 	}
 	bootstrapPath, e := c.EnsureAdminToken()
 	if e != nil {
 		slog.Error("prepare admin authentication", "error", e)
-		os.Exit(2)
+		return 2
 	}
 	if bootstrapPath != "" {
 		slog.Warn("admin authentication bootstrap file created", "path", bootstrapPath)
@@ -57,7 +61,7 @@ func main() {
 	st, e := store.Open(c.Database)
 	if e != nil {
 		slog.Error("open database", "error", e)
-		os.Exit(1)
+		return 1
 	}
 	defer st.Close()
 	sup := vruntime.NewSupervisor(c.VLLMBinary, c.ShutdownGrace, c.ReadinessTimeout)
@@ -74,7 +78,7 @@ func main() {
 	upstream, e := url.Parse(c.Upstream)
 	if e != nil || upstream.Scheme == "" || upstream.Host == "" {
 		slog.Error("invalid upstream URL")
-		os.Exit(2)
+		return 2
 	}
 	proxy := gateway.NewWithOptions(upstream, gateway.VerifyFunc(func(ctx context.Context, key, scope string) error { _, e := keys.Verify(ctx, key, scope); return e }), gateway.Options{UpstreamKey: c.UpstreamAPIKey, Record: func(ctx context.Context, m gateway.RequestMetadata) {
 		_ = st.RecordRequest(ctx, store.APIRequest{RequestID: m.RequestID, Method: m.Method, Path: m.Path, Model: m.Model, StatusCode: m.StatusCode, DurationMS: m.Duration.Milliseconds(), RemoteAddr: m.RemoteAddr})
@@ -95,6 +99,14 @@ func main() {
 	slog.Info("listening", "address", c.Listen)
 	if e = srv.ListenAndServe(); e != nil && !errors.Is(e, http.ErrServerClosed) {
 		slog.Error("server stopped", "error", e)
-		os.Exit(1)
+		shut, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = sup.Stop(shut)
+		_ = srv.Shutdown(shut)
+		return 1
 	}
+	shut, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_ = sup.Stop(shut)
+	return 0
 }

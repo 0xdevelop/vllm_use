@@ -106,10 +106,79 @@ func TestResponsesSuffixAnthropicAliasAndRecording(t *testing.T) {
 	}
 	bad := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	g.ServeHTTP(httptest.NewRecorder(), bad)
+	deadline := time.Now().Add(time.Second)
+	for {
+		mu.Lock()
+		n := len(records)
+		mu.Unlock()
+		if n == 5 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for records: %d", n)
+		}
+		time.Sleep(time.Millisecond)
+	}
 	mu.Lock()
 	defer mu.Unlock()
-	if len(records) != 5 || records[0].Model != "friendly" || records[4].StatusCode != http.StatusUnauthorized {
+	var modelSeen, unauthorized bool
+	for _, record := range records {
+		modelSeen = modelSeen || record.Model == "friendly"
+		unauthorized = unauthorized || record.StatusCode == http.StatusUnauthorized
+	}
+	if len(records) != 5 || !modelSeen || !unauthorized {
 		t.Fatalf("records %#v", records)
+	}
+}
+
+func TestOversizeJSONRejectedWithoutForwarding(t *testing.T) {
+	u, _ := url.Parse("http://127.0.0.1:8000")
+	g := New(u, VerifyFunc(func(context.Context, string, string) error { return nil }))
+	forwarded := false
+	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) { forwarded = true; return nil, errors.New("unexpected") })
+	req := httptest.NewRequest(http.MethodPost, "/v1/completions", io.LimitReader(strings.NewReader(strings.Repeat("x", maxJSONBody+2)), maxJSONBody+1))
+	req.Header.Set("Authorization", "Bearer ok")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != http.StatusRequestEntityTooLarge || forwarded {
+		t.Fatalf("status=%d forwarded=%v", w.Code, forwarded)
+	}
+}
+
+func TestStatusWriterKeepsFirstStatus(t *testing.T) {
+	w := httptest.NewRecorder()
+	s := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+	s.WriteHeader(http.StatusCreated)
+	s.WriteHeader(http.StatusInternalServerError)
+	if s.status != http.StatusCreated || w.Code != http.StatusCreated {
+		t.Fatalf("status=%d underlying=%d", s.status, w.Code)
+	}
+}
+
+func TestRecorderCannotBlockRequest(t *testing.T) {
+	u, _ := url.Parse("http://127.0.0.1:8000")
+	started := make(chan struct{})
+	g := NewWithOptions(u, VerifyFunc(func(context.Context, string, string) error { return nil }), Options{Record: func(ctx context.Context, _ RequestMetadata) {
+		close(started)
+		<-ctx.Done()
+	}})
+	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/completions", nil)
+	req.Header.Set("Authorization", "Bearer ok")
+	done := make(chan struct{})
+	go func() { g.ServeHTTP(httptest.NewRecorder(), req); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("request blocked on recorder")
+	}
+	select {
+	case <-started:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("recorder was not invoked")
 	}
 }
 

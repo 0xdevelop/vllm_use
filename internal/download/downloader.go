@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,6 +59,7 @@ type Job struct {
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	FinishedAt  *time.Time `json:"finished_at,omitempty"`
 	cancel      context.CancelFunc
+	secret      string
 }
 type Downloader struct {
 	mu      sync.RWMutex
@@ -70,8 +72,13 @@ type Downloader struct {
 	root    string
 }
 
-func (d *Downloader) SetStore(s *store.Store) { d.mu.Lock(); d.store = s; d.mu.Unlock() }
-func (d *Downloader) SetRoot(root string)     { d.mu.Lock(); d.root = filepath.Clean(root); d.mu.Unlock() }
+func (d *Downloader) SetStore(s *store.Store) {
+	d.mu.Lock()
+	d.store = s
+	d.mu.Unlock()
+	d.restore()
+}
+func (d *Downloader) SetRoot(root string) { d.mu.Lock(); d.root = filepath.Clean(root); d.mu.Unlock() }
 
 func New(cli string, r Runner) *Downloader {
 	if r == nil {
@@ -144,8 +151,20 @@ func (d *Downloader) Download(parent context.Context, id, repo, dest, token stri
 		d.mu.Unlock()
 		return nil, errors.New("download already running")
 	}
+	for _, existing := range d.jobs {
+		if existing.State == Running && filepath.Clean(existing.Destination) == filepath.Clean(dest) {
+			d.mu.Unlock()
+			return nil, errors.New("download destination already in use")
+		}
+	}
+	if token != "" {
+		if _, ok := d.runner.CommandContext(parent, d.cli).(interface{ SetEnv([]string) }); !ok {
+			d.mu.Unlock()
+			return nil, errors.New("download runner cannot securely receive a token")
+		}
+	}
 	ctx, cancel := context.WithCancel(parent)
-	j := &Job{ID: id, Repo: repo, Destination: dest, State: Running, cancel: cancel}
+	j := &Job{ID: id, Repo: repo, Destination: dest, State: Running, cancel: cancel, secret: token}
 	now := time.Now().UTC()
 	j.StartedAt = &now
 	d.jobs[id] = j
@@ -169,9 +188,6 @@ func (d *Downloader) Download(parent context.Context, id, repo, dest, token stri
 		}
 		env = append(env, "HF_HOME="+dest)
 		x.SetEnv(env)
-	} else if token != "" { // Compatibility for injected runners that cannot set an environment.
-		args = append(args, "--token", token)
-		cmd = d.runner.CommandContext(ctx, d.cli, args...)
 	}
 	out, e := cmd.StdoutPipe()
 	if e != nil {
@@ -250,8 +266,12 @@ func (d *Downloader) finish(j *Job, s State, e error) {
 	j.FinishedAt = &now
 	if e != nil {
 		j.Error = e.Error()
+		if j.secret != "" {
+			j.Error = strings.ReplaceAll(j.Error, j.secret, "[REDACTED]")
+		}
 	}
 	j.cancel = nil
+	j.secret = ""
 	d.persistLocked(j)
 }
 func (d *Downloader) Cancel(id string) error {
@@ -276,7 +296,50 @@ func (d *Downloader) List() []Job {
 		cp.cancel = nil
 		out = append(out, cp)
 	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+func (d *Downloader) restore() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.store == nil {
+		return
+	}
+	rows, err := d.store.DB.Query(`SELECT id,repository,destination,state,progress,error,logs,started_at,finished_at FROM downloads ORDER BY id`)
+	if err != nil {
+		return
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var j Job
+		var state, logs string
+		var started, finished *string
+		if rows.Scan(&j.ID, &j.Repo, &j.Destination, &state, &j.Progress, &j.Error, &logs, &started, &finished) != nil {
+			continue
+		}
+		j.State = State(state)
+		if j.State == Running || j.State == Pending {
+			j.State, j.Error = Canceled, "interrupted by service restart"
+			now := time.Now().UTC()
+			j.FinishedAt = &now
+		}
+		_ = json.Unmarshal([]byte(logs), &j.Logs)
+		if started != nil {
+			if v, e := time.Parse(time.RFC3339Nano, *started); e == nil {
+				j.StartedAt = &v
+			}
+		}
+		if finished != nil {
+			if v, e := time.Parse(time.RFC3339Nano, *finished); e == nil {
+				j.FinishedAt = &v
+			}
+		}
+		d.jobs[j.ID] = &j
+		if state == string(Running) || state == string(Pending) {
+			d.persistLocked(&j)
+		}
+	}
 }
 func (d *Downloader) Logs(id string) ([]string, error) {
 	j, ok := d.Status(id)
