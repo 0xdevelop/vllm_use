@@ -15,6 +15,7 @@ import (
 	"github.com/0xdevelop/vllm-use/internal/api"
 	"github.com/0xdevelop/vllm-use/internal/auth"
 	"github.com/0xdevelop/vllm-use/internal/config"
+	"github.com/0xdevelop/vllm-use/internal/download"
 	"github.com/0xdevelop/vllm-use/internal/gateway"
 	"github.com/0xdevelop/vllm-use/internal/gpu"
 	"github.com/0xdevelop/vllm-use/internal/models"
@@ -33,13 +34,17 @@ func main() {
 	flag.StringVar(&c.Upstream, "upstream", c.Upstream, "vLLM upstream URL")
 	flag.StringVar(&c.AdminToken, "admin-token", "", "admin token (required for non-loopback)")
 	flag.Parse()
-	if !c.IsLoopback() && c.AdminToken == "" {
-		slog.Error("admin token is required for non-loopback listen")
-		os.Exit(2)
-	}
 	if e := c.Prepare(); e != nil {
 		slog.Error("invalid configuration", "error", e)
 		os.Exit(2)
+	}
+	bootstrapPath, e := c.EnsureAdminToken()
+	if e != nil {
+		slog.Error("prepare admin authentication", "error", e)
+		os.Exit(2)
+	}
+	if bootstrapPath != "" {
+		slog.Warn("admin authentication bootstrap file created", "path", bootstrapPath)
 	}
 	st, e := store.Open(c.Database)
 	if e != nil {
@@ -48,14 +53,20 @@ func main() {
 	}
 	defer st.Close()
 	sup := vruntime.NewSupervisor(c.VLLMBinary, c.ShutdownGrace, c.ReadinessTimeout)
+	sup.SetHealthInterval(c.HealthInterval)
 	keys := auth.New(st)
-	app := &api.Server{Models: models.New(st, c.ModelsDir), Keys: keys, GPU: gpu.New(nil), Runtime: sup, AdminToken: c.AdminToken, RequireAdmin: !c.IsLoopback()}
+	dl := download.NewWithOptions(c.HFCLI, nil, c.MaxDownloadWorkers, 1000)
+	dl.SetStore(st)
+	dl.SetRoot(c.ModelsDir)
+	app := &api.Server{Models: models.New(st, c.ModelsDir), Keys: keys, GPU: gpu.New(nil), Runtime: sup, Downloads: dl, Store: st, AdminToken: c.AdminToken, RequireAdmin: true}
 	upstream, e := url.Parse(c.Upstream)
 	if e != nil || upstream.Scheme == "" || upstream.Host == "" {
 		slog.Error("invalid upstream URL")
 		os.Exit(2)
 	}
-	proxy := gateway.New(upstream, gateway.VerifyFunc(func(ctx context.Context, key, scope string) error { _, e := keys.Verify(ctx, key, scope); return e }))
+	proxy := gateway.NewWithOptions(upstream, gateway.VerifyFunc(func(ctx context.Context, key, scope string) error { _, e := keys.Verify(ctx, key, scope); return e }), gateway.Options{UpstreamKey: c.UpstreamAPIKey, Record: func(ctx context.Context, m gateway.RequestMetadata) {
+		_ = st.RecordRequest(ctx, store.APIRequest{RequestID: m.RequestID, Method: m.Method, Path: m.Path, Model: m.Model, StatusCode: m.StatusCode, DurationMS: m.Duration.Milliseconds(), RemoteAddr: m.RemoteAddr})
+	}})
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", proxy)
 	mux.Handle("/", app.Handler())
