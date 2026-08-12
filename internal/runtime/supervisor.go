@@ -26,12 +26,14 @@ const (
 )
 
 type State struct {
-	Status                        Status
-	PID                           int
-	StartedAt, ReadyAt, StoppedAt *time.Time
-	ExitError                     string
-	ExitCode                      *int
-	Logs                          []string
+	Status    Status     `json:"status"`
+	PID       int        `json:"pid"`
+	StartedAt *time.Time `json:"started_at,omitempty"`
+	ReadyAt   *time.Time `json:"ready_at,omitempty"`
+	StoppedAt *time.Time `json:"stopped_at,omitempty"`
+	ExitError string     `json:"exit_error,omitempty"`
+	ExitCode  *int       `json:"exit_code,omitempty"`
+	Logs      []string   `json:"logs"`
 }
 type Supervisor struct {
 	mu                  sync.RWMutex

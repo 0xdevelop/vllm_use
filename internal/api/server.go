@@ -23,12 +23,14 @@ type Server struct {
 	Keys         *auth.Manager
 	GPU          *gpu.NVIDIA
 	Runtime      *vruntime.Supervisor
+	Switch       *vruntime.SwitchService
 	Downloads    *download.Downloader
 	Store        *store.Store
 	AdminToken   string
 	RequireAdmin bool
 	MCP          http.Handler
 	MCPStatus    interface{ Status() any }
+	Web          http.Handler
 }
 
 func (s *Server) Handler() http.Handler {
@@ -38,6 +40,9 @@ func (s *Server) Handler() http.Handler {
 		mux.Handle("/mcp", s.MCP)
 	}
 	mux.Handle("/api/", s.admin(http.HandlerFunc(s.api)))
+	if s.Web != nil {
+		mux.Handle("/", s.Web)
+	}
 	return security(mux)
 }
 func security(next http.Handler) http.Handler {
@@ -75,7 +80,10 @@ func (s *Server) admin(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
-func unauthorized(w http.ResponseWriter) { http.Error(w, "unauthorized", http.StatusUnauthorized) }
+func unauthorized(w http.ResponseWriter) {
+	w.Header().Set("WWW-Authenticate", `Bearer realm="admin"`)
+	writeError(w, http.StatusUnauthorized, "unauthorized")
+}
 func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
@@ -137,7 +145,12 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && p == "/api/downloads":
 		respond(w, s.Downloads.List(), nil)
 	case r.Method == "POST" && p == "/api/downloads":
-		var in struct{ ID, Repository, Destination, Token string }
+		var in struct {
+			ID          string `json:"id"`
+			Repository  string `json:"repository"`
+			Destination string `json:"destination"`
+			Token       string `json:"token"`
+		}
 		if !decode(w, r, &in) {
 			return
 		}
@@ -158,7 +171,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		respond(w, s.MCPStatus.Status(), nil)
 	case r.Method == "GET" && (p == "/api/runtime" || p == "/api/runtime/status" || p == "/api/runtime/logs"):
 		respond(w, s.Runtime.State(), nil)
-	case r.Method == "POST" && (p == "/api/runtime/start" || p == "/api/runtime/restart" || p == "/api/runtime/switch"):
+	case r.Method == "POST" && (p == "/api/runtime/start" || p == "/api/runtime/restart"):
 		var in struct {
 			Options   vruntime.Options `json:"options"`
 			HealthURL string           `json:"health_url"`
@@ -172,6 +185,25 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		} else {
 			e = s.Runtime.Restart(r.Context(), in.Options, in.HealthURL)
 		}
+		respond(w, s.Runtime.State(), e)
+	case r.Method == "POST" && p == "/api/runtime/switch":
+		var in struct {
+			ModelID   string           `json:"model_id"`
+			Options   vruntime.Options `json:"options"`
+			HealthURL string           `json:"health_url"`
+		}
+		if !decode(w, r, &in) {
+			return
+		}
+		if s.Switch == nil {
+			respond(w, nil, errors.New("runtime switching unavailable"))
+			return
+		}
+		if strings.TrimSpace(in.ModelID) == "" {
+			respond(w, nil, errors.New("model_id is required"))
+			return
+		}
+		e := s.Switch.Switch(r.Context(), in.ModelID, in.Options, in.HealthURL)
 		respond(w, s.Runtime.State(), e)
 	case r.Method == "POST" && p == "/api/runtime/stop":
 		e := s.Runtime.Stop(r.Context())
@@ -198,7 +230,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		reqs, e := s.Store.RecentRequests(r.Context(), 10)
 		respond(w, map[string]any{"models": len(mods), "runtime": s.Runtime.State(), "downloads": s.Downloads.List(), "recent_requests": reqs}, e)
 	default:
-		http.NotFound(w, r)
+		writeError(w, http.StatusNotFound, "not found")
 	}
 }
 func (s *Server) downloadAPI(w http.ResponseWriter, r *http.Request) {
@@ -232,22 +264,29 @@ func (s *Server) downloadAPI(w http.ResponseWriter, r *http.Request) {
 		v, e := s.Downloads.Retry(r.Context(), id, in.Token)
 		respond(w, v, e)
 	default:
-		http.NotFound(w, r)
+		writeError(w, http.StatusNotFound, "not found")
 	}
 }
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	d.DisallowUnknownFields()
 	if e := d.Decode(v); e != nil {
-		http.Error(w, "invalid JSON", 400)
+		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return false
 	}
 	if d.Decode(&struct{}{}) == nil {
-		http.Error(w, "multiple JSON values", 400)
+		writeError(w, http.StatusBadRequest, "multiple JSON values")
 		return false
 	}
 	return true
 }
+
+func writeError(w http.ResponseWriter, status int, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+}
+
 func respond(w http.ResponseWriter, v any, e error) {
 	w.Header().Set("Content-Type", "application/json")
 	if e != nil {
@@ -255,8 +294,7 @@ func respond(w http.ResponseWriter, v any, e error) {
 		if errors.Is(e, store.ErrNotFound) {
 			status = http.StatusNotFound
 		}
-		w.WriteHeader(status)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": e.Error()})
+		writeError(w, status, e.Error())
 		return
 	}
 	_ = json.NewEncoder(w).Encode(v)

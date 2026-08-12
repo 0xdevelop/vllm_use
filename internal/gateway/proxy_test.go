@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -8,7 +9,9 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 type roundTrip func(*http.Request) (*http.Response, error)
@@ -48,6 +51,117 @@ func TestRoutingAuthStreamingAndErrors(t *testing.T) {
 	g.ServeHTTP(rr, req)
 	if rr.Code != 502 {
 		t.Fatalf("upstream %d", rr.Code)
+	}
+}
+
+func TestResponsesSuffixAnthropicAliasAndRecording(t *testing.T) {
+	u, _ := url.Parse("http://127.0.0.1:8000")
+	var mu sync.Mutex
+	var records []RequestMetadata
+	g := NewWithOptions(u, VerifyFunc(func(_ context.Context, key, scope string) error {
+		if key != "ok" || scope != "inference" {
+			return errors.New("bad auth")
+		}
+		return nil
+	}), Options{Aliases: map[string]string{"friendly": "actual"}, Record: func(_ context.Context, m RequestMetadata) {
+		mu.Lock()
+		records = append(records, m)
+		mu.Unlock()
+	}})
+	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		var body []byte
+		if r.Body != nil {
+			body, _ = io.ReadAll(r.Body)
+		}
+		if r.URL.Path == "/v1/messages" && string(body) != `{"model":"actual"}` {
+			t.Errorf("alias body = %s", body)
+		}
+		if r.Header.Get("Authorization") != "" || r.Header.Get("X-API-Key") != "" {
+			t.Error("client credentials forwarded")
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+	})
+	for _, tc := range []struct{ method, path, header string }{
+		{http.MethodPost, "/v1/messages", "x-api-key"},
+		{http.MethodGet, "/v1/responses/resp_1", "authorization"},
+		{http.MethodDelete, "/v1/responses/resp_1", "authorization"},
+		{http.MethodPost, "/v1/responses/resp_1/cancel", "authorization"},
+	} {
+		body := ""
+		if tc.path == "/v1/messages" {
+			body = `{"model":"friendly"}`
+		}
+		req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		if tc.header == "x-api-key" {
+			req.Header.Set("X-API-Key", "ok")
+		} else {
+			req.Header.Set("Authorization", "Bearer ok")
+		}
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s %s: %d %s", tc.method, tc.path, w.Code, w.Body.String())
+		}
+	}
+	bad := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	g.ServeHTTP(httptest.NewRecorder(), bad)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(records) != 5 || records[0].Model != "friendly" || records[4].StatusCode != http.StatusUnauthorized {
+		t.Fatalf("records %#v", records)
+	}
+}
+
+func TestSSEIsFlushedBeforeCompletion(t *testing.T) {
+	u, _ := url.Parse("http://upstream.invalid")
+	g := New(u, VerifyFunc(func(context.Context, string, string) error { return nil }))
+	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		reader, writer := io.Pipe()
+		go func() {
+			_, _ = io.WriteString(writer, "data: first\n\n")
+			time.Sleep(100 * time.Millisecond)
+			_, _ = io.WriteString(writer, "data: second\n\n")
+			_ = writer.Close()
+		}()
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/event-stream"}}, Body: reader, Request: r}, nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Header.Set("Authorization", "Bearer ok")
+	w := &flushRecorder{header: make(http.Header), flushed: make(chan struct{}, 1)}
+	started := time.Now()
+	done := make(chan struct{})
+	go func() { g.ServeHTTP(w, req); close(done) }()
+	select {
+	case <-w.flushed:
+		if elapsed := time.Since(started); elapsed >= 80*time.Millisecond {
+			t.Fatalf("first event was buffered for %v", elapsed)
+		}
+	case <-time.After(80 * time.Millisecond):
+		t.Fatal("first SSE event was not flushed")
+	}
+	<-done
+}
+
+type flushRecorder struct {
+	header  http.Header
+	mu      sync.Mutex
+	body    bytes.Buffer
+	status  int
+	flushed chan struct{}
+}
+
+func (w *flushRecorder) Header() http.Header    { return w.header }
+func (w *flushRecorder) WriteHeader(status int) { w.status = status }
+func (w *flushRecorder) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.body.Write(p)
+}
+func (w *flushRecorder) Flush() {
+	select {
+	case w.flushed <- struct{}{}:
+	default:
 	}
 }
 

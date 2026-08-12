@@ -48,13 +48,16 @@ const (
 )
 
 type Job struct {
-	ID, Repo, Destination string
-	State                 State
-	Progress              float64
-	Logs                  []string
-	Error                 string
-	StartedAt, FinishedAt *time.Time
-	cancel                context.CancelFunc
+	ID          string     `json:"id"`
+	Repo        string     `json:"repository"`
+	Destination string     `json:"destination"`
+	State       State      `json:"state"`
+	Progress    float64    `json:"progress"`
+	Logs        []string   `json:"logs"`
+	Error       string     `json:"error,omitempty"`
+	StartedAt   *time.Time `json:"started_at,omitempty"`
+	FinishedAt  *time.Time `json:"finished_at,omitempty"`
+	cancel      context.CancelFunc
 }
 type Downloader struct {
 	mu      sync.RWMutex
@@ -89,6 +92,10 @@ func NewWithOptions(cli string, r Runner, maxWorkers, maxLogs int) *Downloader {
 	return &Downloader{cli: cli, runner: r, jobs: map[string]*Job{}, workers: make(chan struct{}, maxWorkers), maxLogs: maxLogs}
 }
 func (d *Downloader) Download(parent context.Context, id, repo, dest, token string) (*Job, error) {
+	id = strings.TrimSpace(id)
+	if id == "" || len(id) > 128 || strings.ContainsAny(id, "\\/\x00\n\r\t") {
+		return nil, errors.New("invalid download id")
+	}
 	repo = strings.TrimSpace(repo)
 	parts := strings.Split(repo, "/")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.HasPrefix(repo, "-") || strings.ContainsAny(repo, " \\\x00\n\r\t") || strings.Contains(repo, "..") {
@@ -106,12 +113,30 @@ func (d *Downloader) Download(parent context.Context, id, repo, dest, token stri
 		if e != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return nil, errors.New("download destination must be inside models root")
 		}
-		if real, e := filepath.EvalSymlinks(filepath.Dir(clean)); e == nil {
-			rootReal, re := filepath.EvalSymlinks(root)
-			rr, _ := filepath.Rel(rootReal, real)
-			if re != nil || rr == ".." || strings.HasPrefix(rr, ".."+string(filepath.Separator)) {
-				return nil, errors.New("download destination parent escapes models root")
+		rootReal, e := filepath.EvalSymlinks(root)
+		if e != nil {
+			return nil, errors.New("resolve models root: " + e.Error())
+		}
+		ancestor := filepath.Dir(clean)
+		for {
+			if _, e = os.Lstat(ancestor); e == nil {
+				break
+			} else if !errors.Is(e, os.ErrNotExist) {
+				return nil, errors.New("inspect download destination: " + e.Error())
 			}
+			next := filepath.Dir(ancestor)
+			if next == ancestor {
+				return nil, errors.New("download destination has no existing parent")
+			}
+			ancestor = next
+		}
+		real, e := filepath.EvalSymlinks(ancestor)
+		if e != nil {
+			return nil, errors.New("resolve download destination parent: " + e.Error())
+		}
+		rr, e := filepath.Rel(rootReal, real)
+		if e != nil || rr == ".." || strings.HasPrefix(rr, ".."+string(filepath.Separator)) {
+			return nil, errors.New("download destination parent escapes models root")
 		}
 	}
 	d.mu.Lock()

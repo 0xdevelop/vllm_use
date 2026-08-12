@@ -32,6 +32,7 @@ type Dependencies struct {
 	Keys      TokenVerifier
 	GPU       *gpu.NVIDIA
 	Runtime   *vruntime.Supervisor
+	Switch    *vruntime.SwitchService
 	Downloads *download.Downloader
 }
 
@@ -298,6 +299,8 @@ func (w *responseWriter) Flush() {
 	}
 }
 
+func (w *responseWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
 type empty struct{}
 
 func boolptr(v bool) *bool { return &v }
@@ -418,7 +421,7 @@ func registerTools(s *sdk.Server, d Dependencies) {
 		Destination string `json:"destination"`
 		Token       string `json:"token,omitempty"`
 	}
-	sdk.AddTool(s, &sdk.Tool{Name: "models.download", Description: "Start a Hugging Face model download into the managed models root. Token is input-only and never returned.", Annotations: annotations(false, false, false, true)}, func(ctx context.Context, _ *sdk.CallToolRequest, in downloadInput) (*sdk.CallToolResult, any, error) {
+	sdk.AddTool(s, &sdk.Tool{Name: "models.download", Description: "Start a Hugging Face model download into the managed models root.", Annotations: annotations(false, false, false, true)}, func(ctx context.Context, _ *sdk.CallToolRequest, in downloadInput) (*sdk.CallToolResult, any, error) {
 		if err := authorized(ctx, "mcp.models"); err != nil {
 			return nil, nil, err
 		}
@@ -466,7 +469,7 @@ func registerTools(s *sdk.Server, d Dependencies) {
 	for _, spec := range []struct {
 		name string
 		fn   func(context.Context, vruntime.Options, string) error
-	}{{"runtime.start", d.Runtime.Start}, {"runtime.restart", d.Runtime.Restart}, {"runtime.switch", d.Runtime.Restart}} {
+	}{{"runtime.start", d.Runtime.Start}, {"runtime.restart", d.Runtime.Restart}} {
 		sp := spec
 		sdk.AddTool(s, &sdk.Tool{Name: sp.name, Description: "Change vLLM runtime state.", Annotations: annotations(false, true, false, false)}, func(ctx context.Context, _ *sdk.CallToolRequest, in runtimeInput) (*sdk.CallToolResult, any, error) {
 			if err := authorized(ctx, "mcp.runtime"); err != nil {
@@ -476,6 +479,24 @@ func registerTools(s *sdk.Server, d Dependencies) {
 			return nil, runtimeOutput(d.Runtime.State()), toolError(err)
 		})
 	}
+	type switchInput struct {
+		ModelID   string           `json:"model_id"`
+		Options   vruntime.Options `json:"options"`
+		HealthURL string           `json:"health_url"`
+	}
+	sdk.AddTool(s, &sdk.Tool{Name: "runtime.switch", Description: "Stop the active model and start a different model configuration.", Annotations: annotations(false, true, false, false)}, func(ctx context.Context, _ *sdk.CallToolRequest, in switchInput) (*sdk.CallToolResult, any, error) {
+		if err := authorized(ctx, "mcp.runtime"); err != nil {
+			return nil, nil, err
+		}
+		if d.Switch == nil {
+			return nil, nil, errors.New("runtime switching unavailable")
+		}
+		if strings.TrimSpace(in.ModelID) == "" {
+			return nil, nil, errors.New("model_id is required")
+		}
+		err := d.Switch.Switch(ctx, in.ModelID, in.Options, in.HealthURL)
+		return nil, runtimeOutput(d.Runtime.State()), toolError(err)
+	})
 	sdk.AddTool(s, &sdk.Tool{Name: "runtime.stop", Description: "Stop the vLLM runtime.", Annotations: annotations(false, true, true, false)}, func(ctx context.Context, _ *sdk.CallToolRequest, _ empty) (*sdk.CallToolResult, any, error) {
 		if err := authorized(ctx, "mcp.runtime"); err != nil {
 			return nil, nil, err

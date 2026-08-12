@@ -10,9 +10,11 @@ import (
 )
 
 type GPU struct {
-	Index                         int
-	Name, UUID                    string
-	MemoryTotalMiB, MemoryUsedMiB int
+	Index          int    `json:"index"`
+	Name           string `json:"name"`
+	UUID           string `json:"uuid"`
+	MemoryTotalMiB int    `json:"memory_total_mib"`
+	MemoryUsedMiB  int    `json:"memory_used_mib"`
 }
 type Runner interface {
 	Output(context.Context, string, ...string) ([]byte, error)

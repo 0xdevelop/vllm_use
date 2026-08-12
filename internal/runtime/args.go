@@ -7,15 +7,16 @@ import (
 )
 
 type ExtraArg struct {
-	Name   string
-	Values []string
+	Name   string   `json:"name"`
+	Values []string `json:"values"`
 }
 type Options struct {
-	Model, Host     string
-	Port            int
-	TensorParallel  int
-	ServedModelName string
-	ExtraArgs       []ExtraArg
+	Model           string     `json:"model"`
+	Host            string     `json:"host"`
+	Port            int        `json:"port"`
+	TensorParallel  int        `json:"tensor_parallel"`
+	ServedModelName string     `json:"served_model_name"`
+	ExtraArgs       []ExtraArg `json:"extra_args"`
 }
 
 func BuildArgs(o Options) ([]string, error) {

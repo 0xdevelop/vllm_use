@@ -99,10 +99,15 @@ func (s *Store) SetActiveRuntime(ctx context.Context, id string) error {
 }
 
 type APIRequest struct {
-	RequestID, Method, Path, Model, KeyID, RemoteAddr string
-	StatusCode                                        int
-	DurationMS                                        int64
-	CreatedAt                                         time.Time
+	RequestID  string    `json:"request_id"`
+	Method     string    `json:"method"`
+	Path       string    `json:"path"`
+	Model      string    `json:"model,omitempty"`
+	KeyID      string    `json:"key_id,omitempty"`
+	RemoteAddr string    `json:"remote_addr"`
+	StatusCode int       `json:"status_code"`
+	DurationMS int64     `json:"duration_ms"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 func (s *Store) RecordRequest(ctx context.Context, v APIRequest) error {

@@ -76,7 +76,16 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Header.Set("X-Request-ID", rid)
 	rw := &statusWriter{ResponseWriter: w, status: 200}
 	w = rw
-	if r.Method != http.MethodPost && !(r.Method == http.MethodGet && r.URL.Path == "/v1/models") {
+	meta := RequestMetadata{RequestID: rid, Method: r.Method, Path: r.URL.Path, RemoteAddr: r.RemoteAddr}
+	defer func() {
+		if g.record != nil {
+			meta.StatusCode = rw.status
+			meta.Duration = time.Since(started)
+			g.record(context.WithoutCancel(r.Context()), meta)
+		}
+	}()
+	responseChild := strings.HasPrefix(r.URL.Path, "/v1/responses/") && len(r.URL.Path) > len("/v1/responses/")
+	if r.Method != http.MethodPost && !(r.Method == http.MethodGet && (r.URL.Path == "/v1/models" || responseChild)) && !(r.Method == http.MethodDelete && responseChild) {
 		write(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
@@ -84,8 +93,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	token := ""
 	h := r.Header.Get("Authorization")
-	if !strings.HasPrefix(h, "Bearer ") {
+	if strings.HasPrefix(h, "Bearer ") {
+		token = strings.TrimPrefix(h, "Bearer ")
+	} else if strings.HasPrefix(r.URL.Path, "/v1/messages") {
+		token = r.Header.Get("X-API-Key")
+	}
+	if token == "" {
 		write(w, http.StatusUnauthorized, "missing bearer token")
 		return
 	}
@@ -93,19 +108,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusUnauthorized, "authentication unavailable")
 		return
 	}
-	if e := g.verify.Verify(r.Context(), strings.TrimPrefix(h, "Bearer "), "inference"); e != nil {
+	if e := g.verify.Verify(r.Context(), token, "inference"); e != nil {
 		write(w, http.StatusUnauthorized, "invalid bearer token")
 		return
 	}
-	model := ""
-	if len(g.aliases) > 0 && r.Body != nil && strings.Contains(r.Header.Get("Content-Type"), "application/json") {
+	if r.Body != nil && strings.Contains(r.Header.Get("Content-Type"), "application/json") {
 		body, e := io.ReadAll(io.LimitReader(r.Body, 16<<20))
 		if e == nil {
 			r.Body.Close()
 			var obj map[string]any
 			if json.Unmarshal(body, &obj) == nil {
 				if m, ok := obj["model"].(string); ok {
-					model = m
+					meta.Model = m
 					if actual, exists := g.aliases[m]; exists {
 						obj["model"] = actual
 						body, _ = json.Marshal(obj)
@@ -117,15 +131,14 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	g.proxy.ServeHTTP(w, r)
-	if g.record != nil {
-		g.record(context.WithoutCancel(r.Context()), RequestMetadata{RequestID: rid, Method: r.Method, Path: r.URL.Path, Model: model, StatusCode: rw.status, Duration: time.Since(started), RemoteAddr: r.RemoteAddr})
-	}
 }
 
 type statusWriter struct {
 	http.ResponseWriter
 	status int
 }
+
+func (s *statusWriter) Unwrap() http.ResponseWriter { return s.ResponseWriter }
 
 func (s *statusWriter) WriteHeader(n int) { s.status = n; s.ResponseWriter.WriteHeader(n) }
 func (s *statusWriter) Flush() {

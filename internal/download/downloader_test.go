@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,27 @@ type fakeRunner struct {
 	cmd  *fakeCmd
 	name string
 	args []string
+}
+
+func TestDownloadDestinationStaysInsideRoot(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+	d.SetRoot(root)
+	for _, tc := range []struct{ id, destination string }{
+		{"", filepath.Join(root, "model")},
+		{"slash/id", filepath.Join(root, "model")},
+		{"outside", filepath.Join(outside, "model")},
+		{"symlink", filepath.Join(root, "escape", "new", "model")},
+		{"root", root},
+	} {
+		if _, err := d.Download(context.Background(), tc.id, "org/model", tc.destination, ""); err == nil {
+			t.Fatalf("accepted id=%q destination=%q", tc.id, tc.destination)
+		}
+	}
 }
 
 func (f *fakeRunner) CommandContext(_ context.Context, n string, a ...string) Command {

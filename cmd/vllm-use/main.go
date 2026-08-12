@@ -23,6 +23,7 @@ import (
 	"github.com/0xdevelop/vllm-use/internal/models"
 	vruntime "github.com/0xdevelop/vllm-use/internal/runtime"
 	"github.com/0xdevelop/vllm-use/internal/store"
+	webui "github.com/0xdevelop/vllm-use/web"
 )
 
 func main() {
@@ -60,6 +61,7 @@ func main() {
 	}
 	defer st.Close()
 	sup := vruntime.NewSupervisor(c.VLLMBinary, c.ShutdownGrace, c.ReadinessTimeout)
+	switcher := vruntime.NewSwitchService(sup)
 	sup.SetHealthInterval(c.HealthInterval)
 	keys := auth.New(st)
 	dl := download.NewWithOptions(c.HFCLI, nil, c.MaxDownloadWorkers, 1000)
@@ -67,8 +69,8 @@ func main() {
 	dl.SetRoot(c.ModelsDir)
 	registry := models.New(st, c.ModelsDir)
 	gpuService := gpu.New(nil)
-	mcpHandler := managementmcp.New(managementmcp.Dependencies{Models: registry, Keys: keys, GPU: gpuService, Runtime: sup, Downloads: dl}, managementmcp.Options{AllowedOrigins: c.MCPAllowedOrigins})
-	app := &api.Server{Models: registry, Keys: keys, GPU: gpuService, Runtime: sup, Downloads: dl, Store: st, AdminToken: c.AdminToken, RequireAdmin: true, MCP: mcpHandler, MCPStatus: mcpHandler}
+	mcpHandler := managementmcp.New(managementmcp.Dependencies{Models: registry, Keys: keys, GPU: gpuService, Runtime: sup, Switch: switcher, Downloads: dl}, managementmcp.Options{AllowedOrigins: c.MCPAllowedOrigins})
+	app := &api.Server{Models: registry, Keys: keys, GPU: gpuService, Runtime: sup, Switch: switcher, Downloads: dl, Store: st, AdminToken: c.AdminToken, RequireAdmin: true, MCP: mcpHandler, MCPStatus: mcpHandler, Web: webui.Handler()}
 	upstream, e := url.Parse(c.Upstream)
 	if e != nil || upstream.Scheme == "" || upstream.Host == "" {
 		slog.Error("invalid upstream URL")

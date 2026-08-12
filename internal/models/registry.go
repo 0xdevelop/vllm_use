@@ -17,9 +17,17 @@ import (
 )
 
 type Model struct {
-	ID, Name, Kind, Source, Repository, Revision, LocalPath, Status string
-	SizeBytes                                                       int64
-	CreatedAt, UpdatedAt                                            time.Time
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	Kind       string    `json:"kind"`
+	Source     string    `json:"source"`
+	Repository string    `json:"repository"`
+	Revision   string    `json:"revision"`
+	LocalPath  string    `json:"local_path"`
+	Status     string    `json:"status"`
+	SizeBytes  int64     `json:"size_bytes"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
 }
 type Registry struct {
 	store *store.Store

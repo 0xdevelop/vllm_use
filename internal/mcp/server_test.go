@@ -58,7 +58,8 @@ func testHandlerMode(t *testing.T, jsonResponse bool, scopes ...string) *Handler
 	}
 	dl := download.NewWithOptions("unused", nil, 1, 10)
 	dl.SetRoot(modelsRoot)
-	return New(Dependencies{Models: models.New(st, modelsRoot), Keys: verifier{scopes: scopes}, GPU: gpu.New(noGPU{}), Runtime: vruntime.NewSupervisor("unused", time.Millisecond, time.Millisecond), Downloads: dl}, Options{JSONResponse: jsonResponse})
+	sup := vruntime.NewSupervisor("unused", time.Millisecond, time.Millisecond)
+	return New(Dependencies{Models: models.New(st, modelsRoot), Keys: verifier{scopes: scopes}, GPU: gpu.New(noGPU{}), Runtime: sup, Switch: vruntime.NewSwitchService(sup), Downloads: dl}, Options{JSONResponse: jsonResponse})
 }
 
 func rpcBody(id int, method, name, args string) string {
