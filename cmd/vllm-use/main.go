@@ -35,7 +35,7 @@ func main() {
 	flag.StringVar(&c.VLLMBinary, "vllm", c.VLLMBinary, "vLLM executable")
 	flag.StringVar(&c.HFCLI, "hf", c.HFCLI, "Hugging Face CLI executable")
 	flag.StringVar(&c.Upstream, "upstream", c.Upstream, "vLLM upstream URL")
-	flag.StringVar(&c.AdminToken, "admin-token", "", "admin token (required for non-loopback)")
+	flag.StringVar(&c.AdminToken, "admin-token", c.AdminToken, "admin token (required for management API access)")
 	var mcpOrigins string
 	flag.StringVar(&mcpOrigins, "mcp-allowed-origins", "", "comma-separated additional trusted MCP origins")
 	flag.Parse()
