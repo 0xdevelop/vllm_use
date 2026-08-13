@@ -15,6 +15,7 @@ import (
 	"github.com/0xdevelop/vllm-use/ability/ability_gpu"
 	"github.com/0xdevelop/vllm-use/ability/ability_model"
 	"github.com/0xdevelop/vllm-use/ability/ability_runtime"
+	"github.com/0xdevelop/vllm-use/api/api_executer"
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 )
 
@@ -119,7 +120,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
 	case r.Method == "GET" && p == "/api/models":
-		v, e := s.Models.List(r.Context())
+		v, e := api_executer.ExecuteAbility(r.Context(), ability_model.MethodList, map[string]interface{}{})
 		respond(w, v, e)
 	case r.Method == "POST" && p == "/api/models/scan":
 		v, e := s.Models.Scan(r.Context())
@@ -190,7 +191,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(p, "/api/downloads/"):
 		s.downloadAPI(w, r)
 	case r.Method == "GET" && p == "/api/gpus":
-		v, e := s.GPU.List(r.Context())
+		v, e := api_executer.ExecuteAbility(r.Context(), ability_gpu.MethodList, map[string]interface{}{})
 		respond(w, v, e)
 	case r.Method == "GET" && p == "/api/system":
 		respond(w, map[string]any{"go_version": runtime.Version(), "goos": runtime.GOOS, "goarch": runtime.GOARCH, "cpus": runtime.NumCPU()}, nil)

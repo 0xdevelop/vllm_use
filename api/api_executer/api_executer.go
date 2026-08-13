@@ -1,4 +1,3 @@
-// Package api_executer api/api_executer/api_executer.go
 package api_executer
 
 import (
@@ -6,54 +5,39 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/0xdevelop/vllm-use/ability/ability_task"
-	"github.com/0xdevelop/vllm-use/api/api_auth/api_auth_session"
-	"github.com/0xdevelop/vllm-use/api/api_error_code"
 	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
 	"github.com/george012/gtbox/gtbox_log"
 )
 
 var (
-	ErrMethodNotFound   = api_error_code.ErrMethodNotFound
-	ErrInvalidArguments = api_error_code.ErrInvalidArguments
+	ErrMethodNotFound   = errors.New("ability method not found")
+	ErrInvalidArguments = errors.New("invalid ability arguments")
 	ErrInvalidCall      = errors.New("invalid tools/call request")
 )
 
-const (
-	ToolsCallMethod = "tools/call"
-)
+const ToolsCallMethod = "tools/call"
+
+// ExecuteAbility is the protocol-neutral business execution entry used by all
+// authenticated adapters. Authentication and transport concerns stay outside.
+func ExecuteAbility(ctx context.Context, methodName string, arguments interface{}) (interface{}, error) {
+	supportedMethod, ok := api_supported_methods.Method(methodName)
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrMethodNotFound, methodName)
+	}
+	if arguments == nil {
+		arguments = map[string]interface{}{}
+	}
+	gtbox_log.LogInfof("Ability method=[%s]", methodName)
+	return supportedMethod.Execute(ctx, arguments)
+}
 
 func APIExecuter(ctx context.Context, method string, params interface{}, encryptionKey string) (*CallToolResult, error) {
 	methodName, arguments, err := extractCall(method, params)
 	if err != nil {
 		return nil, err
 	}
-	gtbox_log.LogInfof("API method=[%s]", methodName)
-
-	abilityParams, err := normalizeArguments(arguments, encryptionKey)
-	if err != nil {
-		return finish(nil, err, encryptionKey)
-	}
-
-	supportedMethod, ok := api_supported_methods.Method(methodName)
-	if !ok {
-		return finish(nil, ErrMethodNotFound, encryptionKey)
-	}
-	if !supportedMethod.Public {
-		if ctx, err = api_auth_session.AuthenticateRequest(ctx, abilityParams); err != nil {
-			return finish(nil, err, encryptionKey)
-		}
-		// 门禁参数生命周期到此终结：业务 Execute 与 Async 落库只见业务参数
-		delete(abilityParams, "jwt_token")
-	}
-	// Async 受理语义的一次性接入（AGENTS 契约预留）：事务写任务记录并返回 task_id，
-	// Worker 后续调用同一注册项的 Execute。
-	if supportedMethod.Async {
-		acceptedValue, acceptErr := ability_task.AcceptAsyncTask(ctx, methodName, abilityParams)
-		return finish(acceptedValue, acceptErr, encryptionKey)
-	}
-	value, err := supportedMethod.Execute(ctx, abilityParams)
-	return finish(value, err, encryptionKey)
+	value, executeErr := ExecuteAbility(ctx, methodName, arguments)
+	return finish(value, executeErr, encryptionKey)
 }
 
 func extractCall(method string, protocolParams interface{}) (string, interface{}, error) {
@@ -71,6 +55,9 @@ func extractCall(method string, protocolParams interface{}) (string, interface{}
 	arguments, ok := callParams["arguments"]
 	if !ok {
 		return "", nil, fmt.Errorf("%w: tools/call params.arguments is required", ErrInvalidCall)
+	}
+	if _, ok = arguments.(map[string]interface{}); !ok {
+		return "", nil, fmt.Errorf("%w: arguments must be an object", ErrInvalidArguments)
 	}
 	return methodName, arguments, nil
 }

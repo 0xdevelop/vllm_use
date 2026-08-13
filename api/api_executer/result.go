@@ -39,11 +39,13 @@ func finish(value interface{}, resultErr error, encryptionKey string) (*CallTool
 	errorMessage := ""
 	if resultErr != nil {
 		businessError, ok := api_error_code.As(resultErr)
-		if !ok {
-			return nil, resultErr
+		if ok {
+			errorCode = businessError.Code
+			errorMessage = businessError.Message
+		} else {
+			errorCode = api_error_code.InvalidArguments
+			errorMessage = resultErr.Error()
 		}
-		errorCode = businessError.Code
-		errorMessage = businessError.Message
 	}
 
 	content, err := resultContentText(value, errorCode, errorMessage, encryptionKey)

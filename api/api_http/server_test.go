@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/0xdevelop/vllm-use/ability"
 	"github.com/0xdevelop/vllm-use/ability/ability_api_key"
 	"github.com/0xdevelop/vllm-use/ability/ability_download"
 	"github.com/0xdevelop/vllm-use/ability/ability_gpu"
@@ -55,7 +56,12 @@ func testServer(t *testing.T) (*Server, string) {
 	dl.SetRoot(modelsRoot)
 	dl.SetStore(st)
 	sup := ability_runtime.NewSupervisor("unused", time.Millisecond, time.Millisecond)
-	s := &Server{Models: ability_model.New(st, modelsRoot), Keys: ability_api_key.New(st), GPU: ability_gpu.New(apiGPU{}), Runtime: sup, Switch: ability_runtime.NewSwitchService(sup), Downloads: dl, Store: st, AdminToken: "admin", RequireAdmin: true, Web: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("web")) })}
+	models := ability_model.New(st, modelsRoot)
+	gpu := ability_gpu.New(apiGPU{})
+	ability_model.Setup(models)
+	ability_gpu.Setup(gpu)
+	ability.LoadAbilityAPIMethods()
+	s := &Server{Models: models, Keys: ability_api_key.New(st), GPU: gpu, Runtime: sup, Switch: ability_runtime.NewSwitchService(sup), Downloads: dl, Store: st, AdminToken: "admin", RequireAdmin: true, Web: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("web")) })}
 	return s, modelsRoot
 }
 
