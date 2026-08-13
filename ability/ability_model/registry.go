@@ -14,8 +14,34 @@ import (
 	"sync"
 	"time"
 
+	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 )
+
+const MethodList = "models.list"
+
+var currentRegistry *Registry
+
+func Setup(registry *Registry) { currentRegistry = registry }
+
+func LoadAPIMethods() {
+	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{
+		Name:        MethodList,
+		Description: "列出已注册模型",
+		Public:      true,
+		InputSchema: map[string]interface{}{
+			"type":                 "object",
+			"properties":           map[string]interface{}{},
+			"additionalProperties": false,
+		},
+		Execute: func(ctx context.Context, _ interface{}) (interface{}, error) {
+			if currentRegistry == nil {
+				return nil, errors.New("model ability is not initialized")
+			}
+			return currentRegistry.List(ctx)
+		},
+	})
+}
 
 type Model struct {
 	ID         string    `json:"id"`

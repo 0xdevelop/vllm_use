@@ -4,9 +4,8 @@ package ability
 import (
 	"context"
 
-	"github.com/0xdevelop/vllm-use/ability/ability_task"
-	"github.com/0xdevelop/vllm-use/ability/ability_user/ability_user_profile"
-	"github.com/0xdevelop/vllm-use/api/api_auth"
+	"github.com/0xdevelop/vllm-use/ability/ability_gpu"
+	"github.com/0xdevelop/vllm-use/ability/ability_model"
 	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
 )
 
@@ -29,9 +28,6 @@ func LoadAbilityAPIMethods() {
 			},
 			Execute: Test,
 		})
-	api_auth.LoadAPIMethods()
-	// user_profile 调用父包 ability_user 的数据方法，父包带子包装配会成 import 环
-	//（user → profile → user），故作为契约明记的唯一例外由顶层装配。
-	ability_user_profile.LoadAPIMethods()
-	ability_task.LoadAPIMethods()
+	ability_model.LoadAPIMethods()
+	ability_gpu.LoadAPIMethods()
 }

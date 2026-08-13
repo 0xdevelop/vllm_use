@@ -7,7 +7,34 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+
+	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
 )
+
+const MethodList = "gpu.list"
+
+var currentService *NVIDIA
+
+func Setup(service *NVIDIA) { currentService = service }
+
+func LoadAPIMethods() {
+	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{
+		Name:        MethodList,
+		Description: "列出 NVIDIA GPU 状态",
+		Public:      true,
+		InputSchema: map[string]interface{}{
+			"type":                 "object",
+			"properties":           map[string]interface{}{},
+			"additionalProperties": false,
+		},
+		Execute: func(ctx context.Context, _ interface{}) (interface{}, error) {
+			if currentService == nil {
+				return nil, errors.New("GPU ability is not initialized")
+			}
+			return currentService.List(ctx)
+		},
+	})
+}
 
 type GPU struct {
 	Index          int    `json:"index"`
