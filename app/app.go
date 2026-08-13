@@ -10,9 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/0xdevelop/vllm-use/internal/api"
@@ -148,6 +146,3 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 	_ = supervisor.Stop(shutdownCtx)
 	return 0
 }
-
-// ShutdownSignals are the process signals that trigger graceful shutdown.
-var ShutdownSignals = []os.Signal{syscall.SIGINT, syscall.SIGTERM}

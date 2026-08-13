@@ -4,12 +4,13 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"syscall"
 
 	"github.com/0xdevelop/vllm-use/app"
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), app.ShutdownSignals...)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	os.Exit(app.Run(ctx, os.Args[1:], os.Stderr))
 }
