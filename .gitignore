@@ -5,3 +5,9 @@
 *.log
 .env
 /data/
+/tmp/
+/web/node_modules/*
+!/web/node_modules/go.mod
+/web/*.tsbuildinfo
+/web/vite.config.js
+/web/vite.config.d.ts

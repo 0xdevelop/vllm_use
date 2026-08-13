@@ -3,13 +3,13 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "packageManager": "bun@1.3.3",
+  "packageManager": "bun@1.3.14",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc --noEmit --pretty false -p tsconfig.app.json && tsc --noEmit --pretty false -p tsconfig.node.json && vite build",
     "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc --noEmit --pretty false -p tsconfig.app.json && tsc --noEmit --pretty false -p tsconfig.node.json"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.0",

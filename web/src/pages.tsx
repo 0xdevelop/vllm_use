@@ -1,5 +1,7 @@
 import{useState,type FormEvent,type ReactNode}from'react';import{Link}from'@tanstack/react-router';import{useMutation,useQuery,useQueryClient}from'@tanstack/react-query';import{api,json,type APIKey,type Dashboard,type DownloadTask,type GPU,type MCPStatus,type Model,type RequestMetadata,type Runtime,type RuntimeOptions,type Scope,type Setting,type SystemStatus}from'./api'
-type Page={path:string;label:string;component:()=>ReactNode}
+export const pagePaths=['/dashboard','/models','/runtime','/gpu','/keys','/mcp','/logs','/settings'] as const
+type PagePath=(typeof pagePaths)[number]
+type Page={path:PagePath;label:string;component:()=>ReactNode}
 const fmt=(v:string|null|undefined)=>v?new Date(v).toLocaleString('zh-CN'):'—';const bytes=(n:number)=>n?`${(n/1073741824).toFixed(1)} GiB`:'—'
 function Notice({children,kind='info'}:{children:ReactNode;kind?:'info'|'error'}){return <div className={`notice ${kind}`}>{children}</div>}
 function Loading(){return <p className="muted">正在加载…</p>}function Empty({text='暂无数据'}:{text?:string}){return <div className="empty">{text}</div>}

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { ReactNode } from 'react'
 import { render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { fireEvent } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import App from './App'
 
@@ -10,10 +10,10 @@ vi.mock('@tanstack/react-router', () => ({
 }))
 
 describe('admin authentication', () => {
-  it('stores the bootstrap token and reveals navigation', async () => {
+  it('stores the bootstrap token and reveals navigation', () => {
     render(<QueryClientProvider client={new QueryClient()}><App><p>内容</p></App></QueryClientProvider>)
-    await userEvent.type(screen.getByLabelText('管理员令牌'), 'bootstrap-secret')
-    await userEvent.click(screen.getByRole('button', { name: '进入' }))
+    fireEvent.change(screen.getByLabelText('管理员令牌'), { target: { value: 'bootstrap-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: '进入' }))
     expect(screen.getByRole('navigation')).toBeInTheDocument()
     expect(sessionStorage.getItem('vllm-use-admin-token')).toBe('bootstrap-secret')
   })

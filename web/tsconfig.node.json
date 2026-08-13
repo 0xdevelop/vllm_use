@@ -1,1 +1,1 @@
-{"compilerOptions":{"composite":true,"skipLibCheck":true,"module":"ESNext","moduleResolution":"Bundler","allowImportingTsExtensions":true},"include":["vite.config.ts","eslint.config.js"]}
+{"compilerOptions":{"target":"ES2022","skipLibCheck":true,"strict":true,"noEmit":true,"module":"ESNext","moduleResolution":"Bundler","allowImportingTsExtensions":true},"include":["vite.config.ts"]}
