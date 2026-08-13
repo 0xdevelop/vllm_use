@@ -18,6 +18,8 @@ import (
 	"github.com/0xdevelop/vllm-use/ability/ability_gpu"
 	"github.com/0xdevelop/vllm-use/ability/ability_model"
 	"github.com/0xdevelop/vllm-use/ability/ability_runtime"
+	"github.com/0xdevelop/vllm-use/ability/ability_settings"
+	"github.com/0xdevelop/vllm-use/api/api_executer"
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 )
 
@@ -60,8 +62,13 @@ func testServer(t *testing.T) (*Server, string) {
 	gpu := ability_gpu.New(apiGPU{})
 	ability_model.Setup(models)
 	ability_gpu.Setup(gpu)
+	ability_model.SetupActiveModel(func() string { return "" })
+	ability_download.Setup(dl)
+	ability_runtime.Setup(sup, ability_runtime.NewSwitchService(sup))
+	ability_api_key.Setup(ability_api_key.New(st))
+	ability_settings.Setup(st)
 	ability.LoadAbilityAPIMethods()
-	s := &Server{Models: models, Keys: ability_api_key.New(st), GPU: gpu, Runtime: sup, Switch: ability_runtime.NewSwitchService(sup), Downloads: dl, Store: st, AdminToken: "admin", RequireAdmin: true, Web: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("web")) })}
+	s := &Server{Keys: ability_api_key.New(st), AdminToken: "admin", RequireAdmin: true, Web: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("web")) })}
 	return s, modelsRoot
 }
 
@@ -160,7 +167,11 @@ func TestMajorAdminRoutesAndJSONContract(t *testing.T) {
 		t.Fatalf("linked download contract: %d %#v", w.Code, linked)
 	}
 	for deadline := time.Now().Add(time.Second); ; time.Sleep(time.Millisecond) {
-		job, _ := s.Downloads.Status("linked")
+		value, err := api_executer.ExecuteAbility(api_executer.WithAdmin(context.Background()), ability_download.MethodStatus, map[string]interface{}{"id": "linked"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		job := value.(ability_download.Job)
 		if job.State != ability_download.Running {
 			break
 		}

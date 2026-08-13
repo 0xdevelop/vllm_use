@@ -28,7 +28,7 @@ func LoadAPIMethods() {
 	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{
 		Name:        MethodList,
 		Description: "列出已注册模型",
-		Public:      true,
+		Scope:       "mcp.models",
 		InputSchema: map[string]interface{}{
 			"type":                 "object",
 			"properties":           map[string]interface{}{},

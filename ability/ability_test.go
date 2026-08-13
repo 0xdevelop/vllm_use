@@ -28,11 +28,23 @@ func TestLoadAbilityAPIMethodsExecutesModelAndGPUAbilities(t *testing.T) {
 
 	LoadAbilityAPIMethods()
 	methods := api_supported_methods.Methods()
-	if len(methods) != 3 || methods[0].Name != MethodTest || methods[1].Name != ability_model.MethodList || methods[2].Name != ability_gpu.MethodList {
-		t.Fatalf("unexpected method order: %#v", methods)
+	if len(methods) < 3 || methods[0].Name != MethodTest || methods[1].Name != ability_model.MethodList {
+		t.Fatalf("unexpected method prefix: %#v", methods)
+	}
+	want := map[string]bool{ability_model.MethodList: true, ability_gpu.MethodList: true, MethodDashboard: true}
+	seen := map[string]bool{}
+	for _, method := range methods {
+		if seen[method.Name] {
+			t.Fatalf("duplicate method %q", method.Name)
+		}
+		seen[method.Name] = true
+		delete(want, method.Name)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing methods: %#v", want)
 	}
 	for _, name := range []string{ability_model.MethodList, ability_gpu.MethodList} {
-		result, executeErr := api_executer.APIExecuter(context.Background(), api_executer.ToolsCallMethod, map[string]interface{}{
+		result, executeErr := api_executer.APIExecuter(api_executer.WithAdmin(context.Background()), api_executer.ToolsCallMethod, map[string]interface{}{
 			"name": name, "arguments": map[string]interface{}{},
 		}, "")
 		if executeErr != nil {

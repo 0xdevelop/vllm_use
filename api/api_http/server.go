@@ -1,36 +1,29 @@
 package api_http
 
 import (
-	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"net/http"
-	"runtime"
 	"strconv"
 	"strings"
 
+	"github.com/0xdevelop/vllm-use/ability"
 	"github.com/0xdevelop/vllm-use/ability/ability_api_key"
 	"github.com/0xdevelop/vllm-use/ability/ability_download"
 	"github.com/0xdevelop/vllm-use/ability/ability_gpu"
 	"github.com/0xdevelop/vllm-use/ability/ability_model"
 	"github.com/0xdevelop/vllm-use/ability/ability_runtime"
+	"github.com/0xdevelop/vllm-use/ability/ability_settings"
 	"github.com/0xdevelop/vllm-use/api/api_executer"
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 )
 
 type Server struct {
-	Models       *ability_model.Registry
 	Keys         *ability_api_key.Manager
-	GPU          *ability_gpu.NVIDIA
-	Runtime      *ability_runtime.Supervisor
-	Switch       *ability_runtime.SwitchService
-	Downloads    *ability_download.Downloader
-	Store        *sqlite.Store
 	AdminToken   string
 	RequireAdmin bool
 	MCP          http.Handler
-	MCPStatus    interface{ Status() any }
 	Web          http.Handler
 }
 
@@ -72,7 +65,7 @@ func (s *Server) mcp(next http.Handler) http.Handler {
 			unauthorized(w)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(api_executer.WithScopes(r.Context(), key.Scopes)))
 	})
 }
 
@@ -94,7 +87,7 @@ func (s *Server) admin(next http.Handler) http.Handler {
 		}
 		token := strings.TrimPrefix(raw, "Bearer ")
 		if s.AdminToken != "" && len(token) == len(s.AdminToken) && subtle.ConstantTimeCompare([]byte(token), []byte(s.AdminToken)) == 1 {
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(api_executer.WithAdmin(r.Context())))
 			return
 		}
 		scope := "admin.read"
@@ -109,7 +102,7 @@ func (s *Server) admin(next http.Handler) http.Handler {
 			unauthorized(w)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(api_executer.WithAdmin(r.Context())))
 	})
 }
 func unauthorized(w http.ResponseWriter) {
@@ -120,14 +113,11 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
 	case r.Method == "GET" && p == "/api/models":
-		v, e := api_executer.ExecuteAbility(r.Context(), ability_model.MethodList, map[string]interface{}{})
-		respond(w, v, e)
+		execute(w, r, ability_model.MethodList, map[string]interface{}{})
 	case r.Method == "POST" && p == "/api/models/scan":
-		v, e := s.Models.Scan(r.Context())
-		respond(w, v, e)
+		execute(w, r, ability_model.MethodScan, map[string]interface{}{})
 	case r.Method == "GET" && strings.HasPrefix(p, "/api/models/"):
-		v, e := s.Models.Get(r.Context(), strings.TrimPrefix(p, "/api/models/"))
-		respond(w, v, e)
+		execute(w, r, ability_model.MethodGet, map[string]interface{}{"id": strings.TrimPrefix(p, "/api/models/")})
 	case r.Method == "POST" && p == "/api/models/huggingface":
 		var in struct {
 			Repository string `json:"repository"`
@@ -136,8 +126,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &in) {
 			return
 		}
-		v, e := s.Models.RegisterHuggingFace(r.Context(), in.Repository, in.Revision)
-		respond(w, v, e)
+		execute(w, r, ability_model.MethodRegisterHF, map[string]interface{}{"repository": in.Repository, "revision": in.Revision})
 	case r.Method == "POST" && p == "/api/models/local":
 		var in struct {
 			Name string `json:"name"`
@@ -146,16 +135,9 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &in) {
 			return
 		}
-		v, e := s.Models.RegisterLocal(r.Context(), in.Name, in.Path)
-		respond(w, v, e)
+		execute(w, r, ability_model.MethodRegisterLocal, map[string]interface{}{"name": in.Name, "path": in.Path})
 	case r.Method == "DELETE" && strings.HasPrefix(p, "/api/models/"):
-		id := strings.TrimPrefix(p, "/api/models/")
-		if s.Switch != nil && s.Switch.Active() == id {
-			respond(w, nil, errors.New("refusing to delete the running model"))
-			return
-		}
-		e := s.Models.Delete(r.Context(), id, r.URL.Query().Get("files") == "true")
-		respond(w, map[string]bool{"deleted": e == nil}, e)
+		execute(w, r, ability_model.MethodDelete, map[string]interface{}{"id": strings.TrimPrefix(p, "/api/models/"), "files": r.URL.Query().Get("files") == "true"})
 	case r.Method == "POST" && p == "/api/keys":
 		var in struct {
 			Name   string   `json:"name"`
@@ -164,45 +146,35 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &in) {
 			return
 		}
-		k, secret, e := s.Keys.CreateNamed(r.Context(), in.Name, in.Scopes)
-		respond(w, map[string]any{"key": k, "secret": secret}, e)
+		execute(w, r, ability_api_key.MethodCreate, map[string]interface{}{"name": in.Name, "scopes": in.Scopes})
 	case r.Method == "GET" && p == "/api/keys":
-		v, e := s.Keys.List(r.Context())
-		respond(w, v, e)
+		execute(w, r, ability_api_key.MethodList, map[string]interface{}{})
 	case r.Method == "POST" && strings.HasSuffix(p, "/enable") && strings.HasPrefix(p, "/api/keys/"):
 		id := strings.TrimSuffix(strings.TrimPrefix(p, "/api/keys/"), "/enable")
-		e := s.Keys.SetEnabled(r.Context(), id, true)
-		respond(w, map[string]bool{"enabled": e == nil}, e)
+		execute(w, r, ability_api_key.MethodEnable, map[string]interface{}{"id": id})
 	case r.Method == "POST" && strings.HasSuffix(p, "/disable") && strings.HasPrefix(p, "/api/keys/"):
 		id := strings.TrimSuffix(strings.TrimPrefix(p, "/api/keys/"), "/disable")
-		e := s.Keys.SetEnabled(r.Context(), id, false)
-		respond(w, map[string]bool{"disabled": e == nil}, e)
+		execute(w, r, ability_api_key.MethodDisable, map[string]interface{}{"id": id})
 	case r.Method == "DELETE" && strings.HasPrefix(p, "/api/keys/"):
-		respond(w, map[string]bool{"deleted": true}, s.Keys.Delete(r.Context(), strings.TrimPrefix(p, "/api/keys/")))
+		execute(w, r, ability_api_key.MethodDelete, map[string]interface{}{"id": strings.TrimPrefix(p, "/api/keys/")})
 	case r.Method == "GET" && p == "/api/downloads":
-		respond(w, s.Downloads.List(), nil)
+		execute(w, r, ability_download.MethodList, map[string]interface{}{})
 	case r.Method == "POST" && p == "/api/downloads":
 		var in ability_download.Request
 		if !decode(w, r, &in) {
 			return
 		}
-		v, e := s.Downloads.DownloadRequest(context.WithoutCancel(r.Context()), in)
-		respond(w, v, e)
+		execute(w, r, ability_download.MethodStart, toArguments(in))
 	case strings.HasPrefix(p, "/api/downloads/"):
 		s.downloadAPI(w, r)
 	case r.Method == "GET" && p == "/api/gpus":
-		v, e := api_executer.ExecuteAbility(r.Context(), ability_gpu.MethodList, map[string]interface{}{})
-		respond(w, v, e)
+		execute(w, r, ability_gpu.MethodList, map[string]interface{}{})
 	case r.Method == "GET" && p == "/api/system":
-		respond(w, map[string]any{"go_version": runtime.Version(), "goos": runtime.GOOS, "goarch": runtime.GOARCH, "cpus": runtime.NumCPU()}, nil)
+		execute(w, r, ability.MethodSystem, map[string]interface{}{})
 	case r.Method == "GET" && p == "/api/mcp":
-		if s.MCPStatus == nil {
-			respond(w, nil, sqlite.ErrNotFound)
-			return
-		}
-		respond(w, s.MCPStatus.Status(), nil)
+		execute(w, r, ability.MethodMCPStatus, map[string]interface{}{})
 	case r.Method == "GET" && (p == "/api/runtime" || p == "/api/runtime/status" || p == "/api/runtime/logs"):
-		respond(w, s.Runtime.State(), nil)
+		execute(w, r, ability_runtime.MethodStatus, map[string]interface{}{})
 	case r.Method == "POST" && (p == "/api/runtime/start" || p == "/api/runtime/restart"):
 		var in struct {
 			Options   ability_runtime.Options `json:"options"`
@@ -211,13 +183,11 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &in) {
 			return
 		}
-		var e error
-		if p == "/api/runtime/start" {
-			e = s.Runtime.Start(r.Context(), in.Options, in.HealthURL)
-		} else {
-			e = s.Runtime.Restart(r.Context(), in.Options, in.HealthURL)
+		method := ability_runtime.MethodStart
+		if p == "/api/runtime/restart" {
+			method = ability_runtime.MethodRestart
 		}
-		respond(w, s.Runtime.State(), e)
+		execute(w, r, method, map[string]interface{}{"options": in.Options, "health_url": in.HealthURL})
 	case r.Method == "POST" && p == "/api/runtime/switch":
 		var in struct {
 			ModelID   string                  `json:"model_id"`
@@ -227,40 +197,22 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &in) {
 			return
 		}
-		if s.Switch == nil {
-			respond(w, nil, errors.New("runtime switching unavailable"))
-			return
-		}
-		if strings.TrimSpace(in.ModelID) == "" {
-			respond(w, nil, errors.New("model_id is required"))
-			return
-		}
-		e := s.Switch.Switch(r.Context(), in.ModelID, in.Options, in.HealthURL)
-		respond(w, s.Runtime.State(), e)
+		execute(w, r, ability_runtime.MethodSwitch, map[string]interface{}{"model_id": in.ModelID, "options": in.Options, "health_url": in.HealthURL})
 	case r.Method == "POST" && p == "/api/runtime/stop":
-		e := s.Runtime.Stop(r.Context())
-		respond(w, map[string]bool{"stopped": e == nil}, e)
+		execute(w, r, ability_runtime.MethodStop, map[string]interface{}{})
 	case r.Method == "GET" && p == "/api/settings":
-		v, e := s.Store.Settings(r.Context())
-		respond(w, v, e)
+		execute(w, r, ability_settings.MethodList, map[string]interface{}{})
 	case r.Method == "PUT" && p == "/api/settings":
 		var in []sqlite.Setting
 		if !decode(w, r, &in) {
 			return
 		}
-		respond(w, map[string]bool{"updated": true}, s.Store.PutSettings(r.Context(), in))
+		execute(w, r, ability_settings.MethodUpdate, map[string]interface{}{"settings": in})
 	case r.Method == "GET" && p == "/api/requests/recent":
 		n, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		v, e := s.Store.RecentRequests(r.Context(), n)
-		respond(w, v, e)
+		execute(w, r, ability_settings.MethodRecentRequests, map[string]interface{}{"limit": n})
 	case r.Method == "GET" && p == "/api/dashboard":
-		mods, e := s.Models.List(r.Context())
-		if e != nil {
-			respond(w, nil, e)
-			return
-		}
-		reqs, e := s.Store.RecentRequests(r.Context(), 10)
-		respond(w, map[string]any{"models": len(mods), "runtime": s.Runtime.State(), "downloads": s.Downloads.List(), "recent_requests": reqs}, e)
+		execute(w, r, ability.MethodDashboard, map[string]interface{}{})
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
@@ -275,17 +227,11 @@ func (s *Server) downloadAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.Method == "GET" && action == "":
-		v, ok := s.Downloads.Status(id)
-		if !ok {
-			respond(w, nil, sqlite.ErrNotFound)
-			return
-		}
-		respond(w, v, nil)
+		execute(w, r, ability_download.MethodStatus, map[string]interface{}{"id": id})
 	case r.Method == "GET" && action == "logs":
-		v, e := s.Downloads.Logs(id)
-		respond(w, v, e)
+		execute(w, r, ability_download.MethodLogs, map[string]interface{}{"id": id})
 	case r.Method == "POST" && action == "cancel":
-		respond(w, map[string]bool{"canceled": true}, s.Downloads.Cancel(id))
+		execute(w, r, ability_download.MethodCancel, map[string]interface{}{"id": id})
 	case r.Method == "POST" && action == "retry":
 		var in struct {
 			Token string `json:"token"`
@@ -293,12 +239,29 @@ func (s *Server) downloadAPI(w http.ResponseWriter, r *http.Request) {
 		if !decode(w, r, &in) {
 			return
 		}
-		v, e := s.Downloads.Retry(r.Context(), id, in.Token)
-		respond(w, v, e)
+		execute(w, r, ability_download.MethodRetry, map[string]interface{}{"id": id, "token": in.Token})
 	default:
 		writeError(w, http.StatusNotFound, "not found")
 	}
 }
+
+func execute(w http.ResponseWriter, r *http.Request, method string, arguments map[string]interface{}) {
+	value, err := api_executer.ExecuteAbility(r.Context(), method, arguments)
+	respond(w, value, err)
+}
+
+func toArguments(value interface{}) map[string]interface{} {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return map[string]interface{}{}
+	}
+	arguments := map[string]interface{}{}
+	if json.Unmarshal(payload, &arguments) != nil {
+		return map[string]interface{}{}
+	}
+	return arguments
+}
+
 func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 	d := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	d.DisallowUnknownFields()

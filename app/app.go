@@ -103,8 +103,13 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 	gpuService := ability_gpu.New(nil)
 	ability_model.Setup(registry)
 	ability_gpu.Setup(gpuService)
+	ability_model.SetupActiveModel(switcher.Active)
+	ability_download.Setup(downloads)
+	ability_runtime.Setup(supervisor, switcher)
+	ability_api_key.Setup(keys)
+	ability_settings.Setup(st)
 	ability.LoadAbilityAPIMethods()
-	management := &api_http.Server{Models: registry, Keys: keys, GPU: gpuService, Runtime: supervisor, Switch: switcher, Downloads: downloads, Store: st, AdminToken: c.AdminToken, RequireAdmin: true, MCP: api_mcp.Handler(), Web: webui.Handler()}
+	management := &api_http.Server{Keys: keys, AdminToken: c.AdminToken, RequireAdmin: true, MCP: api_mcp.Handler(), Web: webui.Handler()}
 
 	upstream, err := url.Parse(c.Upstream)
 	if err != nil || upstream.Scheme == "" || upstream.Host == "" {

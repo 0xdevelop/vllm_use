@@ -13,9 +13,28 @@ var (
 	ErrMethodNotFound   = errors.New("ability method not found")
 	ErrInvalidArguments = errors.New("invalid ability arguments")
 	ErrInvalidCall      = errors.New("invalid tools/call request")
+	ErrPermissionDenied = errors.New("ability permission denied")
 )
 
 const ToolsCallMethod = "tools/call"
+
+type accessContextKey struct{}
+type accessContext struct {
+	admin  bool
+	scopes map[string]bool
+}
+
+func WithAdmin(ctx context.Context) context.Context {
+	return context.WithValue(ctx, accessContextKey{}, accessContext{admin: true})
+}
+
+func WithScopes(ctx context.Context, scopes []string) context.Context {
+	set := make(map[string]bool, len(scopes))
+	for _, scope := range scopes {
+		set[scope] = true
+	}
+	return context.WithValue(ctx, accessContextKey{}, accessContext{scopes: set})
+}
 
 // ExecuteAbility is the protocol-neutral business execution entry used by all
 // authenticated adapters. Authentication and transport concerns stay outside.
@@ -23,6 +42,10 @@ func ExecuteAbility(ctx context.Context, methodName string, arguments interface{
 	supportedMethod, ok := api_supported_methods.Method(methodName)
 	if !ok {
 		return nil, fmt.Errorf("%w: %s", ErrMethodNotFound, methodName)
+	}
+	access, _ := ctx.Value(accessContextKey{}).(accessContext)
+	if !supportedMethod.Public && !access.admin && !access.scopes["mcp.admin"] && !access.scopes[supportedMethod.Scope] {
+		return nil, fmt.Errorf("%w: %s", ErrPermissionDenied, methodName)
 	}
 	if arguments == nil {
 		arguments = map[string]interface{}{}
