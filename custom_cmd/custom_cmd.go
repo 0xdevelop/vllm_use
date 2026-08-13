@@ -36,13 +36,19 @@ func HandleCustomCmds(args []string, sApp *config.ExtendApp) {
 	}
 
 	a_flag := args[1]
+	if len(a_flag) > 0 && a_flag[0] == '-' {
+		return
+	}
+	allowed := false
 	for _, a_cmd := range customcommands {
 		if a_cmd == a_flag {
+			allowed = true
 			break
-		} else {
-			fmt.Printf("not allow cmd\n")
-			os.Exit(1)
 		}
+	}
+	if !allowed {
+		fmt.Printf("not allow cmd\n")
+		os.Exit(1)
 	}
 
 	switch a_flag {

@@ -19,7 +19,7 @@ const (
 	mcpProtocolVersion    = "2026-07-28"
 )
 
-func newMCPHTTPHandler() http.Handler {
+func Handler() http.Handler {
 	handler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server {
 			return newMCPServer()

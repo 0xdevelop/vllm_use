@@ -41,7 +41,7 @@ func StartAPIServiceWithMCP(apiCfgMCP *api_config_mcp.APIConfigMCP) {
 	muxRouter := http.NewServeMux()
 	muxRouter.HandleFunc("GET /{$}", api_common.HomeHandler)
 	muxRouter.HandleFunc("GET /robots.txt", api_common.RobotsHandler)
-	muxRouter.Handle("POST /{$}", newMCPHTTPHandler())
+	muxRouter.Handle("POST /{$}", Handler())
 	muxRouter.HandleFunc("/", api_common.HomeHandler)
 
 	addr := fmt.Sprintf("127.0.0.1:%d", apiCfgMCP.Port)

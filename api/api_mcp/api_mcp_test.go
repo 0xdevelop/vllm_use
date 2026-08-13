@@ -127,7 +127,7 @@ func TestMCPStatelessHTTPUsesProtocol20260728(t *testing.T) {
 	request.Header.Set("Mcp-Name", "test")
 
 	response := httptest.NewRecorder()
-	newMCPHTTPHandler().ServeHTTP(response, request)
+	Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("unexpected MCP status %d: %s", response.Code, response.Body.String())
 	}
