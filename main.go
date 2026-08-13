@@ -1,17 +1,24 @@
+// Package vllm-use /main.go
 package main
 
 import (
-	"context"
+	"fmt"
 	"os"
-	"os/signal"
 	"runtime"
-	"syscall"
 	"time"
 
-	appservice "github.com/0xdevelop/vllm-use/app"
-	projectconfig "github.com/0xdevelop/vllm-use/config"
+	"github.com/0xdevelop/vllm-use/api"
+	"github.com/0xdevelop/vllm-use/common"
+	"github.com/0xdevelop/vllm-use/config"
+	"github.com/0xdevelop/vllm-use/custom_cmd"
+	"github.com/0xdevelop/vllm-use/db"
+	"github.com/0xdevelop/vllm-use/policy"
+
 	"github.com/george012/gtbox"
+	"github.com/george012/gtbox/gtbox_cmd"
 	"github.com/george012/gtbox/gtbox_log"
+	"github.com/george012/gtbox/gtbox_orm/gtbox_orm_config"
+	"github.com/george012/gtbox/gtbox_orm/gtbox_orm_mysql"
 )
 
 var (
@@ -26,43 +33,114 @@ var (
 func setupApp() {
 	runMode := gtbox.RunModeDebug
 	switch mRunMode {
+	case "debug":
+		runMode = gtbox.RunModeDebug
 	case "test":
 		runMode = gtbox.RunModeTest
 	case "release":
 		runMode = gtbox.RunModeRelease
+	default:
+		runMode = gtbox.RunModeDebug
 	}
-	projectconfig.CurrentApp = projectconfig.NewApp(runMode)
-	projectconfig.CurrentApp.GitCommitHash = mGitCommitHash
-	projectconfig.CurrentApp.GitCommitTime = mGitCommitTime
-	projectconfig.CurrentApp.GoVersion = mGoVersion
-	projectconfig.CurrentApp.PackageOS = mPackageOS
-	projectconfig.CurrentApp.PackageTime = mPackageTime
-	gtbox.SetupGTBox(
-		projectconfig.CurrentApp.AppName,
-		projectconfig.CurrentApp.CurrentRunMode,
-		projectconfig.CurrentApp.AppLogPath,
+
+	config.CurrentApp = config.NewApp(
+		config.ProjectName,
+		config.ProjectBundleID,
+		fmt.Sprintf("%s service",
+			config.ProjectName,
+		),
+		runMode,
+	)
+
+	if config.CurrentApp.CurrentRunMode == gtbox.RunModeDebug {
+		cmdMap := map[string]string{
+			"git_commit_hash": "git show -s --format=%H",
+			"git_commit_time": "git show -s --format=\"%ci\" | cut -d ' ' -f 1,2 | sed 's/ /_/'",
+			"build_os":        "go env GOOS",
+			"go_version":      "go version | awk '{print $3}'",
+		}
+		cmdRes := gtbox_cmd.RunWith(cmdMap)
+
+		if cmdRes != nil {
+			mGitCommitHash = cmdRes["git_commit_hash"]
+			mGitCommitTime = cmdRes["git_commit_time"]
+			mPackageOS = cmdRes["build_os"]
+			mGoVersion = cmdRes["go_version"]
+			mPackageTime = time.Now().UTC().Format("2006-01-02_15:04:05")
+		}
+	}
+
+	config.CurrentApp.GitCommitHash = mGitCommitHash
+	config.CurrentApp.GitCommitTime = mGitCommitTime
+	config.CurrentApp.GoVersion = mGoVersion
+	config.CurrentApp.PackageOS = mPackageOS
+	config.CurrentApp.PackageTime = mPackageTime
+
+	custom_cmd.HandleCustomCmds(os.Args, config.CurrentApp)
+
+	gtbox.SetupGTBox(config.CurrentApp.AppName,
+		config.CurrentApp.CurrentRunMode,
+		config.CurrentApp.AppLogPath,
 		30,
 		gtbox_log.GTLogSaveHours,
-		projectconfig.CurrentApp.HTTPRequestTimeOut,
+		config.CurrentApp.HTTPRequestTimeOut,
 	)
 }
 
 func main() {
-	setupApp()
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	gtbox_log.LogInfof("starting %s version=%s", projectconfig.CurrentApp.AppName, projectconfig.CurrentApp.Version)
-	os.Exit(appservice.Run(ctx, os.Args[1:], os.Stderr))
-}
+	runtime.LockOSThread()
 
-func init() {
-	if mGoVersion == "" {
-		mGoVersion = runtime.Version()
+	setupApp()
+
+	defer common.PanicHandler()
+
+	if config.CurrentApp.CurrentRunMode == gtbox.RunModeDebug {
+		config.CurrentApp.AppConfigFilePath = "./example_files/config_local.yaml"
+		//config.CurrentApp.AppConfigFilePath = "./example_files/config_local_outside.yaml"
+	} else {
+		config.CurrentApp.AppConfigFilePath = "./conf/config.yaml"
 	}
-	if mPackageOS == "" {
-		mPackageOS = runtime.GOOS
-	}
-	if mPackageTime == "" {
-		mPackageTime = time.Now().UTC().Format("2006-01-02_15:04:05")
-	}
+
+	config.SyncConfigFile(func(err error) {
+		gtbox_log.LogErrorf("[sync config eeror]:%v", err)
+	})
+	gtbox_log.LogInfof("开始链接数据库！")
+	db.GlobalMysqlCtl = gtbox_orm_mysql.Instance()
+
+	db.GlobalMysqlCtl.OPenMysql(
+		config.GlobalConfig.MysqlCfg.DBUser,
+		config.GlobalConfig.MysqlCfg.DBPwd,
+		config.GlobalConfig.MysqlCfg.DBName,
+		config.GlobalConfig.MysqlCfg.DBAddress,
+		config.GlobalConfig.MysqlCfg.DBPort,
+		gtbox_orm_config.GTORMTimeZoneUTC,
+		func(err error) {
+			if err != nil {
+				gtbox_log.LogErrorf("连接数据库异常！错误信息：%v", err.Error())
+				return
+			} else {
+				gtbox_log.LogInfof("连接数据库成功！")
+
+				if migrateErr := db.MysqlAutoMigrate(); migrateErr != nil {
+					gtbox_log.LogErrorf("Mysql AutoMigrate failed: %v", migrateErr)
+					return
+				}
+				gtbox_log.LogInfof("Mysql AutoMigrate completed")
+
+				// 启动维护调度域内部异步大循环
+				policy.PolicyServicesStart()
+
+				if config.GlobalConfig.ApiCfg != nil {
+					api.StartAPIServices(config.GlobalConfig.ApiCfg)
+				} else {
+					gtbox_log.LogErrorf("api config was not initialized")
+				}
+
+			}
+		},
+	)
+	common.LoadSigHandle(func() {
+		api.StopApiServices()
+	}, nil)
+
 }
