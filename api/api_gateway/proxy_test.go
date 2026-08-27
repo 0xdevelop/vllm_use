@@ -20,11 +20,11 @@ func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f
 
 func TestRoutingAuthStreamingAndErrors(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:8000")
-	g := New(u, VerifyFunc(func(_ context.Context, k, s string) error {
+	g := New(u, VerifyFunc(func(_ context.Context, k, s string) (Principal, error) {
 		if k != "ok" || s != "inference" {
-			return errors.New("bad")
+			return Principal{}, errors.New("bad")
 		}
-		return nil
+		return Principal{KeyID: "key-routing"}, nil
 	}))
 	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
 		if r.Header.Get("Authorization") != "" {
@@ -58,11 +58,11 @@ func TestResponsesSuffixAnthropicAliasAndRecording(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:8000")
 	var mu sync.Mutex
 	var records []RequestMetadata
-	g := NewWithOptions(u, VerifyFunc(func(_ context.Context, key, scope string) error {
+	g := NewWithOptions(u, VerifyFunc(func(_ context.Context, key, scope string) (Principal, error) {
 		if key != "ok" || scope != "inference" {
-			return errors.New("bad auth")
+			return Principal{}, errors.New("bad auth")
 		}
-		return nil
+		return Principal{KeyID: "key-audit"}, nil
 	}), Options{Aliases: map[string]string{"friendly": "actual"}, Record: func(_ context.Context, m RequestMetadata) {
 		mu.Lock()
 		records = append(records, m)
@@ -124,7 +124,14 @@ func TestResponsesSuffixAnthropicAliasAndRecording(t *testing.T) {
 	var modelSeen, unauthorized bool
 	for _, record := range records {
 		modelSeen = modelSeen || record.Model == "friendly"
-		unauthorized = unauthorized || record.StatusCode == http.StatusUnauthorized
+		if record.StatusCode == http.StatusUnauthorized {
+			unauthorized = true
+			if record.KeyID != "" {
+				t.Fatalf("unauthorized request attributed to %q", record.KeyID)
+			}
+		} else if record.KeyID != "key-audit" {
+			t.Fatalf("authenticated request missing attribution: %#v", record)
+		}
 	}
 	if len(records) != 5 || !modelSeen || !unauthorized {
 		t.Fatalf("records %#v", records)
@@ -133,7 +140,7 @@ func TestResponsesSuffixAnthropicAliasAndRecording(t *testing.T) {
 
 func TestOversizeJSONRejectedWithoutForwarding(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:8000")
-	g := New(u, VerifyFunc(func(context.Context, string, string) error { return nil }))
+	g := New(u, VerifyFunc(func(context.Context, string, string) (Principal, error) { return Principal{}, nil }))
 	forwarded := false
 	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) { forwarded = true; return nil, errors.New("unexpected") })
 	req := httptest.NewRequest(http.MethodPost, "/v1/completions", io.LimitReader(strings.NewReader(strings.Repeat("x", maxJSONBody+2)), maxJSONBody+1))
@@ -159,7 +166,7 @@ func TestStatusWriterKeepsFirstStatus(t *testing.T) {
 func TestRecorderCannotBlockRequest(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:8000")
 	started := make(chan struct{})
-	g := NewWithOptions(u, VerifyFunc(func(context.Context, string, string) error { return nil }), Options{Record: func(ctx context.Context, _ RequestMetadata) {
+	g := NewWithOptions(u, VerifyFunc(func(context.Context, string, string) (Principal, error) { return Principal{}, nil }), Options{Record: func(ctx context.Context, _ RequestMetadata) {
 		close(started)
 		<-ctx.Done()
 	}})
@@ -184,7 +191,7 @@ func TestRecorderCannotBlockRequest(t *testing.T) {
 
 func TestSSEIsFlushedBeforeCompletion(t *testing.T) {
 	u, _ := url.Parse("http://upstream.invalid")
-	g := New(u, VerifyFunc(func(context.Context, string, string) error { return nil }))
+	g := New(u, VerifyFunc(func(context.Context, string, string) (Principal, error) { return Principal{}, nil }))
 	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
 		reader, writer := io.Pipe()
 		go func() {
@@ -236,7 +243,7 @@ func (w *flushRecorder) Flush() {
 
 func TestCancellationPropagates(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:8000")
-	g := New(u, VerifyFunc(func(context.Context, string, string) error { return nil }))
+	g := New(u, VerifyFunc(func(context.Context, string, string) (Principal, error) { return Principal{}, nil }))
 	seen := make(chan struct{})
 	started := make(chan struct{})
 	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {

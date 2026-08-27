@@ -16,11 +16,17 @@ import (
 )
 
 type Verifier interface {
-	Verify(context.Context, string, string) error
+	Verify(context.Context, string, string) (Principal, error)
 }
-type VerifyFunc func(context.Context, string, string) error
+type VerifyFunc func(context.Context, string, string) (Principal, error)
 
-func (f VerifyFunc) Verify(c context.Context, k, s string) error { return f(c, k, s) }
+func (f VerifyFunc) Verify(c context.Context, k, s string) (Principal, error) { return f(c, k, s) }
+
+// Principal is the non-secret identity attached to an authenticated request.
+// It is safe to persist for audit and revocation analysis.
+type Principal struct {
+	KeyID string
+}
 
 type Gateway struct {
 	proxy       *httputil.ReverseProxy
@@ -121,10 +127,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		write(w, http.StatusUnauthorized, "authentication unavailable")
 		return
 	}
-	if e := g.verify.Verify(r.Context(), token, "inference"); e != nil {
+	principal, e := g.verify.Verify(r.Context(), token, "inference")
+	if e != nil {
 		write(w, http.StatusUnauthorized, "invalid bearer token")
 		return
 	}
+	meta.KeyID = principal.KeyID
 	if r.Body != nil && strings.Contains(r.Header.Get("Content-Type"), "application/json") {
 		body, e := io.ReadAll(io.LimitReader(r.Body, maxJSONBody+1))
 		if e == nil {

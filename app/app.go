@@ -121,11 +121,14 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 		slog.Error("invalid upstream URL")
 		return 2
 	}
-	proxy := api_gateway.NewWithOptions(upstream, api_gateway.VerifyFunc(func(ctx context.Context, key, scope string) error {
-		_, verifyErr := keys.Verify(ctx, key, scope)
-		return verifyErr
+	proxy := api_gateway.NewWithOptions(upstream, api_gateway.VerifyFunc(func(ctx context.Context, key, scope string) (api_gateway.Principal, error) {
+		verified, verifyErr := keys.Verify(ctx, key, scope)
+		if verifyErr != nil {
+			return api_gateway.Principal{}, verifyErr
+		}
+		return api_gateway.Principal{KeyID: verified.ID}, nil
 	}), api_gateway.Options{UpstreamKey: c.UpstreamAPIKey, Record: func(ctx context.Context, metadata api_gateway.RequestMetadata) {
-		_ = st.RecordRequest(ctx, sqlite.APIRequest{RequestID: metadata.RequestID, Method: metadata.Method, Path: metadata.Path, Model: metadata.Model, StatusCode: metadata.StatusCode, DurationMS: metadata.Duration.Milliseconds(), RemoteAddr: metadata.RemoteAddr})
+		_ = st.RecordRequest(ctx, sqlite.APIRequest{RequestID: metadata.RequestID, Method: metadata.Method, Path: metadata.Path, Model: metadata.Model, KeyID: metadata.KeyID, StatusCode: metadata.StatusCode, DurationMS: metadata.Duration.Milliseconds(), RemoteAddr: metadata.RemoteAddr})
 	}})
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", proxy)

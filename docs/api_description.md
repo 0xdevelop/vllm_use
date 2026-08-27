@@ -47,7 +47,7 @@ SQLite 是持久化真相源。下载进程和 vLLM runtime 由宿主机进程�
 - OpenAI Chat Completions、Completions、Responses、Embeddings 和 Models 端点。
 - Anthropic Messages 与 token counting 兼容端点。
 - SSE 流式透传、请求取消传播、模型 alias 重写、可选上游凭据注入。
-- 只记录非敏感请求元数据；客户端 Authorization/X-API-Key 不转发给 upstream。
+- 只记录非敏感请求元数据，并以 API key ID（不含 secret）标记已认证请求，便于审计和撤销分析；客户端 Authorization/X-API-Key 不转发给 upstream。
 
 Gateway 不执行业务管理 Ability，也不伪造推理结果。upstream 不可用时返回明确的 502。
 
