@@ -1,76 +1,39 @@
 ﻿# vllm-use 项目契约
 
-以下规则适用于本仓库及由本模版实例化的项目的后续所有任务。
+本仓库是可公开开源的宿主机原生 vLLM 管理与推理服务。以下约束优先于 project_template_go 中已裁剪的示例域；禁止恢复 MySQL、用户注册/Auth、JSON-RPC、WebSocket、gRPC、通用异步 Task/Policy 或 Docker 示例。
 
-## API 与 Ability 边界
+## 产品架构
 
-- API 通信与执行的完整目标契约以 `docs/api_description.md` 为准。
-- JSON-RPC、MCP、WebSocket、gRPC 都只是通信协议 Adapter，统一运输 MCP Tool Call 数据模型：请求固定为 `tools/call → name → arguments`，业务结果固定为 MCP `CallToolResult`，不得各自复制或分叉业务调用格式。
-- 每种通信协议只提供一个固定业务调用入口，所有业务能力统一通过 `params.name` 选择；不得为具体 Ability 增加独立 URL、WebSocket message type 或 gRPC RPC。`test` 是默认注册方法，不是独立入口。
-- 各 Adapter 只解析自己的协议外壳，并把 `method`、`params` 和当前可选编解码所需的 `encryptionKey` 交给 `api_executer.APIExecuter`。
-- `api_executer.APIExecuter` 是唯一实际业务执行入口；它统一校验 `tools/call`、提取 `name` 和 `arguments`、完成可选编解码，再读取已注册项并调用实际 `Execute`，不得维护另一份业务 `switch case`。
-- 包装配采用“父包带子包”：`ability` 父包是 Ability 方法目录的唯一装配入口，由父包主动 import 并加载直属业务子包；子包在自己的 `LoadAPIMethods()` 中注册本域方法名、描述、InputSchema 和实际 `Execute`，不得反向 import、调用或注册到父包。更深层级继续由各父包按同一规则管理自己的直属子包，上层不得越级逐个装配叶子包。
-- Go 不会自动发现目录下的新子包；新增 Ability 子包时，必须由其直属父包显式加入加载调用，不得用隐藏 `init()`、反向注册、反射扫描或额外框架伪造自动加载。
-- `api/api_supported_methods` 只承载共享方法结构、有序目录和实际 `Execute`，不得声明具体业务域的方法或引用 `ability`。方法描述和执行函数不得维护两份映射。
-- `ability` 返回 `value/error`；`APIExecuter` 统一生成 MCP `CallToolResult`。结果沿本次调用栈返回发起调用的 Adapter，再由该 Adapter 编码本协议响应。
-- `CallToolResult.isError` 是固定 wire 字段：成功必须明确返回 `false`，失败必须返回 `true`；不得沿用 SDK 的默认值省略行为。
-- 禁止引入 `Invocation`、同构请求包装、Method Handler 中间层、第二套执行器、返回分发器或跨协议广播。
-- `arguments` 直接承载业务载荷，也是唯一可选编解码边界，不再增加额外载荷包装。具体算法、密钥来源及非标准编码不属于 API 编排契约；如启用编解码，只能转换 `arguments`，不得改变方法名、请求 ID、错误字段或协议外壳。
-- `test` 固定由 `ability` 父包最先加载。新增业务方法原则上只增加对应 Ability 子包内的方法描述、实际函数和直属父包加载调用，不得修改既有通信协议实现或 `APIExecuter`。唯一例外是 `SupportedMethod.Async` 受理语义的一次性接入：`Async` 标识只允许由 `APIExecuter` 读取并统一受理（事务写任务记录、返回 `task_id`、交给 Worker 调用同一个 `Execute`）；`Execute` 保持纯业务工作函数，各异步方法不得自写受理。
-- `SupportedMethod.Async` 只由后端注册设置，不属于调用参数。默认同步；异步方法必须以 MySQL 持久任务记录为真相源，返回 `task_id` 前完成事务写入，并由 Worker 后续调用同一注册项的 `Execute`。不得使用请求 goroutine、内存 channel 或连接存活状态冒充可恢复任务。
+- 保留 project_template_go 的 `setupApp`、gtbox、统一日志、run mode、应用元数据、生成/测试/发布机制；产品运行时由 `app.Run` 组合。
+- 管理调用链固定为 **Adapter → `api_executer` → `api_supported_methods` → Ability**。Adapter 只做认证、协议/路由映射和响应编码；业务规则、参数解码和执行不得复制到 Adapter。
+- `api_executer.ExecuteAbility` 是受保护管理能力的唯一业务执行入口，统一执行 scope 门禁并从注册表调用 `Execute`。不得引入第二套执行器、业务 switch、反射扫描、隐藏 `init()` 注册或跨协议返回分发。
+- `ability` 父包是方法装配入口；产品域固定为 `ability_model`、`ability_download`、`ability_runtime`、`ability_gpu`、`ability_api_key`、`ability_settings`。新增子域必须由直属父包显式加载。
+- `api_supported_methods` 只保存协议无关的方法元数据、scope、InputSchema 和 Execute，不引用具体 Ability。
+- 管理 Adapter 当前为同一 HTTP listener 上的 `/api/*` 与 `/mcp`。MCP 使用官方 Go SDK、stateless Streamable HTTP、协议版本 `2026-07-28`。不得把已经裁剪的 JSON-RPC、WebSocket 或 gRPC 示例恢复为产品接口。
+- 推理 Gateway 位于同一 listener 的 `/v1/*`，代理宿主机 vLLM，支持 OpenAI 与 Anthropic 兼容端点、流式透传和 API key scope 校验；它不是管理 Ability 的旁路。
+- Web Admin 使用 React，生产资源由 Go `embed` 打入同一二进制；不得新增独立前端服务作为发布依赖。
 
-## MCP 协议基线
+## 宿主机运行与数据
 
-- MCP 只实现协议版本 `2026-07-28`，使用官方 Go SDK `v1.7.0` 及其 stateless、per-request `_meta`、`server/discover` 和标准 MCP HTTP headers；不为旧协议增加兼容分支。
-- 不声明或使用已由 SEP-2577 废弃的 roots、sampling、logging capability；SDK 为兼容窗口保留的旧 API 不构成本项目能力。
-- 协议层不得自造 MCP Tasks、进程内结果缓存、第二套执行链或返回分发器。长任务的受理、进度与结果查询只能实现为 Ability 层普通注册方法，走同一条统一调用链，真相源是数据库任务记录。
-- JSON-RPC HTTP 只允许 `POST /` 承载真实协议调用；`GET /` 使用 `HomeHandler`，`GET /robots.txt` 使用独立 `RobotsHandler`，其余不匹配路径或方法使用 `HomeHandler`。
-- gRPC 只提供一个 `APIService.Call` RPC，使用原生 protobuf `CallRequest` / `CallResponse` 运输统一调用数据和结果；实际业务方法通过 `params.name` 扩展，不新增 RPC。`.proto` 源只放在 `api/api_grpc/proto`，生成的 `.pb.go` 只放在 `api/api_grpc/protobuf`，并且只由根目录 `gen_proto.sh` 生成。
+- 只管理一个宿主机原生 vLLM 进程；使用进程组完成启动、就绪检查、停止、重启和模型切换。禁止 Docker、容器编排和伪造的进程/GPU 状态。
+- 持久化固定为 SQLite（`db/sqlite`）；模型、下载、API key、非敏感设置和请求元数据共用该 store。CGO 可用，但不得把产品迁回 MySQL/GORM 模板示例。
+- GPU 信息来自真实 `nvidia-smi`；不可用时返回明确的空结果或错误，不得构造设备数据。
+- 模型下载使用宿主机 Hugging Face CLI；token、API key、bootstrap token 和上游凭据不得写日志或明文返回（创建时的一次性 key secret 除外）。
+- 默认只监听 `127.0.0.1:8080`。管理 API 必须使用 bootstrap admin token 或具备对应 scope 的 API key；MCP 还必须通过协议版本和跨源保护。
+- 配置权威是 `ability_settings.Config`、环境变量和 CLI flags。`example_files/*.yaml` 仅供 gtbox Debug/模板加载保持合法，不得重新承载已裁剪产品配置。
 
-## 文档与临时目录
+## 文档与生成物
 
-- 每个功能域使用对应的 `docs/ability_xxx.md` 维护功能概览、业务流程、预期目的和实现进度，README 只保留入口链接，不重复维护细节。
-- Ability 文档统一模板（`<!-- TOC -->` 索引 + 编号 H1/H2，无独立大标题）：`1. <域> 域定位与边界 → 2. 业务流转（mermaid 调用/状态图）→ 3. 方法契约（每方法 `## 3.N.`：一句语义 + JSON 传参举例 + 实现要求要点）→ 4. 数据与并发纪律 → 5. 验收边界 → 6. 实现进度`；无流转或无对外方法的域可省对应节并顺延编号。入参 schema 权威只在 `api_methods.md`（编号分组由 `gen_api_docs.go` 生成、正文不带 TOC 块，禁手改；功能域树形分类目录由 `/docs_api` 渲染页左侧承担，实现在 `web/src/docs_api.ts` 的 buildToc：H1 域为可折叠父节点、H2 方法为子节点），ability 文档不重复 schema。
-- 实现进度统一使用 Markdown checklist 和状态标识：`[ ] ⬜ TODO` 未开始、`[ ] 🔄 IN_PROGRESS` 推进中、`[ ] 🟡 DONE` 实现完成未验收、`[x] ✅ ACCEPTED` 验收通过终态、`[ ] ❓ DISPUTED` 有争议需对齐。只有 `ACCEPTED` 可以打勾；不得把计划、编译、局部测试或仅完成代码提前标记为验收通过。
-- 方法清单文档 `docs/api_methods.md` 由根目录 `gen_api_docs.sh` 从 `api_supported_methods` 注册表生成，禁止手改；新增方法后重新执行生成，发版由 `git_tag.sh` 自动调用。对外只暴露单个渲染页 `GET /docs_api`（`api_methods.md` 内容由服务端注入页面，无任何原始文件路由，页面源码为 `test_ui/web/src/docs_api.*`）；`api_description.md` 等内部契约一律不对外、不 embed。
-- `docs/` 文档需要网页呈现时统一走既定模式：文档本体留在 `docs/` 作唯一事实源，对外文档经 `docs` 包 `//go:embed` 随二进制发布；test_ui 现有 mux 挂单页路由，文档内容由服务端注入页面（dev 优先读磁盘、离仓回落 embed），不设任何原始文件路由。失败路径与未匹配路径统一 `HomeHandler` 中性空响应，不输出任何提示。不新增 HTTP 服务、不复制文档、不引入 Python 或额外构建步骤。
-- 项目根目录 `tmp/` 只存放可再生成的缓存、中间产物和临时探针，允许随时整体删除。正式源码、配置事实和续做所需状态不得依赖 `tmp/` 中的内容。
+- `README.md` 是公开入口，`docs/api_description.md` 描述当前管理/推理接口边界。
+- `docs/api_methods.md` 由根目录 `gen_api_docs.sh` 从当前方法注册表生成，禁止手改。修改注册方法或生成器后必须重新生成并检查不含已裁剪域。
+- 不保留已裁剪示例域的“未来计划”文档，避免后续代理误恢复旧架构。
+- 项目根 `tmp/` 只存可删除、可再生成的缓存和冒烟产物；源码和续做状态不得依赖它。
 
-## Auth 准入域与统一门禁
+## 工具、测试与发布
 
-- Auth 是 API 准入域，实现整体位于 `api/api_auth`（子包 `api_auth_verify_code` / `api_auth_register` / `api_auth_session` / `api_auth_common` / `api_auth_config` / `api_auth_model`），负责验证码、注册/登录认证编排、session/JWT、刷新和退出；`ability` 树内不得出现鉴权/准入代码。
-- APIExecuter 内置统一准入门禁：非 `Public` 注册方法在 Execute 前经 `api_auth_session.AuthenticateRequest` 验证 `arguments.jwt_token`，验证后即将其从 arguments 移除——业务 Execute 与 Async 落库只见业务参数；身份经 context 下传，业务方法用 `api_auth_session.AuthenticatedUser(ctx)` 读取，不得自行鉴权。`jwt_token` 入参 schema 由方法注册表按非 Public 自动注入，业务注册声明即启动 panic。`SupportedMethod.Public` 零值为受保护（fail-closed），仅 `test`、验证码、注册、登录、refresh 显式标记 `Public: true`。
-- api 层（协议 Adapter、APIExecuter、准入门禁、`api_auth` 域）定型后不再随业务演进修改；新增功能一律进 `ability` 业务子包。契约明记的既有例外：`SupportedMethod.Async` 受理语义的一次性接入，与 `ability_user_profile` 的顶层装配（profile 依赖父包 `ability_user` 数据方法，父包带子包装配会成 import 环）。
-- Auth 需要用户身份或校验密码时必须调用 `ability_user` 的方法，不得直接查询、创建或更新 User model；注册事务把当前 GORM transaction 传给 User 方法，User 方法不得另开事务。
-- 邮件发送供应商由 Auth `email` 配置的 `provider` 字段选择，当前仅支持 `resend`（官方 Go SDK）；`api_key`、`from`、`product_name`、`verification_subject` 等均为强配置，缺失或非法在配置加载层显式拒绝并输出字段级 warning 日志（指向 `auth_cfg.xxx.yyy` 键路径，敏感字段只报名不报值），不在业务代码里兜默认值。
-- 密码、验证码、session/token 等敏感值不得明文落库或写日志。唯一例外：Debug 运行模式下验证码明文可写 Debug 日志供本地联调，Release/Test 模式禁止。认证失败响应不得泄露邮箱或手机号是否存在。
-
-## MySQL 与 GORM
-
-- `db.GlobalMysqlCtl` 是项目唯一 MySQL 入口。它由 `main.go` 使用 `gtbox_orm_mysql.Instance()` 初始化，并在连接成功后才启动 API 服务。
-- 业务代码不得再次调用 `gtbox_orm_mysql.Instance()`、`gorm.Open` 或建立其他数据库连接池。
-- 所有查询和写入必须使用现有全局实例；需要 GORM 能力时使用 `db.GlobalMysqlCtl.MysqlDB.WithContext(ctx)`。
-- 多步写操作使用同一全局实例的 GORM `Transaction`。不得用多次无事务写入拼接一个原子业务动作。
-- 表结构以 Go model 为事实源，通过全局实例执行 GORM `AutoMigrate` 同步（登记于 `db.MysqlAutoMigrate`）。Model 使用 GORM tag 声明唯一索引、普通索引、NULL 和字段约束。
-- 库表 model 统一嵌入 `gorm.Model`，其 `ID` 仅作行主键不出业务接口；业务标识用归属前缀明确命名（如 `UserID`、`SessionID`），确需 UUID 时直接调用 `uuid.NewString()`，不得增加只封装一行的 ID 生成函数。
-- 禁止通过 `mysql` CLI、手写 DDL、外部 shell 脚本或另一套迁移框架修改表结构；`AutoMigrate` 无法安全完成的破坏性变更必须先确认。
-- 数据库未初始化或连接不可用时必须返回明确错误，禁止 nil panic，也不得把未连接环境描述成真实数据库验证通过。
-
-## Task 异步与 Policy 维护调度
-
-- `SupportedMethod.Async` 受理已按预留契约一次性接入 `APIExecuter`（门禁后调 `ability_task.AcceptAsyncTask` 写入持久化排队区并返回 `task_id`）；至此 api 层封版，后续任何业务演进不得再修改 `APIExecuter`。
-- 任务状态三字段分层：程序级 `run_status`（queued/running/done，done 唯一终态）、业务级 `process_status`（空/success/failed/cancelled/system_error）、量化 `progress`。两层值域零交集；枚举值在 Go 常量、model 列 comment、`docs/ability_task.md` 三处同步维护，改一处必改三处。
-- Worker 认领一律 `FOR UPDATE SKIP LOCKED`（MySQL 8.0+）；异步 `Execute` 必须幂等或自查重（重启恢复重跑的兜底契约）；任务载荷明文 JSON 存储，敏感值不得进入异步方法 arguments 与结果。
-- `policy` 是统一调度域：`main.go` 调用 `PolicyServicesStart`，由该方法封装并拉起唯一内部大循环；每轮按 `runtime.NumCPU() × policy_cfg.workers_scaller` 扣除正在执行数，仅以剩余名额从持久化排队区派发单次 Worker。Worker 不常驻、不空转，一次只执行一条任务并在完成后自然释放；长任务跨轮持续占用原名额，不得重复扩容。其他维护事项异步互不阻塞，同类事项必须防重入；单次域函数不得自建周期死循环。重启遗留 `running` 任务由第一轮 `RequeueOrphanedTasks` 自然捞回，远程任务的 `Execute` 必须依靠持久化远程 ID/幂等键自查续跑。
-
-## 工具与测试纪律
-
-- 不得自造独立小工具 main 包、演示/测试程序包，工具类代码不得编进服务二进制，也不得塞进既有功能包（如 `custom_cmd`）。
-- 生成类工具统一形态：根目录 `gen_*.sh` 脚本 + `//go:build ignore` 单文件生成器（与 `tools.go` 同为 build-tag 隔离，不属于任何包、不进任何构建），只由脚本 `go run` 调用。
-- 不得堆积无验收价值的 `*_test.go`。新增测试必须对应真实验收路径（协议行为、关键失败路径），不为覆盖率或演示而写。
-
-## 验收
-
-- 协议层测试、单元测试、编译和 `AutoMigrate` 成功是不同证据，不得互相替代。
-- 业务失败必须通过统一 `CallToolResult` 返回（HTTP 200 + `isError=true`）；请求外壳损坏、协议不匹配或服务内部故障才使用协议错误。
-- 所有缓存和中间文件放在项目 `tmp/`，且删除 `tmp/` 不得影响后续重新构建或续做；启动的进程必须关闭并复查无残留。
+- 禁止 Docker。生成工具只允许根目录 `gen_*.sh` + `//go:build ignore` 单文件；不得新增会编进产品的临时 main/探针。
+- 每个闭环至少执行 `go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...` 和 `git diff --check`。
+- 涉及前端时必须在 `web/` 执行 Bun frozen install、lint、typecheck、test、production build，再验证 Go embed。
+- 涉及运行链时必须构建并启动真实单二进制，验证 `/healthz`、受保护管理 API、MCP 和 embed 页面；无 vLLM/GPU 时只验证可真实完成的失败路径和其他链路。
+- 临时进程和产物必须清理，提交前复查工作区。闭环后提交并推送 `main`，再确认 `origin/main` 指向该提交。
+- 发布只能运行仓库 `git_tag.sh`；禁止手改版本、手工 tag 或手工 release。

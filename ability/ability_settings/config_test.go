@@ -15,6 +15,15 @@ func TestValidationAndLoopback(t *testing.T) {
 	if !c.IsLoopback() {
 		t.Fatal("loopback not detected")
 	}
+	c.MCPAllowedOrigins = []string{"https://admin.example"}
+	if e := c.Validate(); e != nil {
+		t.Fatalf("trusted origin rejected: %v", e)
+	}
+	c.MCPAllowedOrigins = []string{"not-an-origin"}
+	if e := c.Validate(); e == nil {
+		t.Fatal("invalid trusted origin accepted")
+	}
+	c.MCPAllowedOrigins = nil
 	c.Listen = "0.0.0.0:8080"
 	if c.IsLoopback() {
 		t.Fatal("wildcard treated as loopback")

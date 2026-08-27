@@ -127,7 +127,11 @@ func TestMCPStatelessHTTPUsesProtocol20260728(t *testing.T) {
 	request.Header.Set("Mcp-Name", "test")
 
 	response := httptest.NewRecorder()
-	Handler().ServeHTTP(response, request)
+	handler, err := Handler(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("unexpected MCP status %d: %s", response.Code, response.Body.String())
 	}
@@ -149,6 +153,45 @@ func TestMCPStatelessHTTPUsesProtocol20260728(t *testing.T) {
 		serverInfo["name"] != config.ProjectName ||
 		serverInfo["version"] != config.ProjectVersion {
 		t.Fatalf("unexpected response: %#v", rpcResponse)
+	}
+}
+
+func TestMCPTrustedOriginsAreExplicit(t *testing.T) {
+	ability.LoadAbilityAPIMethods()
+	body := `{"jsonrpc":"2.0","id":"origin","method":"tools/call","params":{"name":"test","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"origin-test","version":"1.0.0"},"io.modelcontextprotocol/clientCapabilities":{"extensions":{}}}}}`
+	request := func(origin string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "http://service.local/mcp", bytes.NewBufferString(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Accept", "application/json, text/event-stream")
+		r.Header.Set("Mcp-Protocol-Version", mcpProtocolVersion)
+		r.Header.Set("Mcp-Method", "tools/call")
+		r.Header.Set("Mcp-Name", "test")
+		r.Header.Set("Origin", origin)
+		return r
+	}
+
+	defaultHandler, err := Handler(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	denied := httptest.NewRecorder()
+	defaultHandler.ServeHTTP(denied, request("https://admin.example"))
+	if denied.Code != http.StatusForbidden {
+		t.Fatalf("untrusted origin status = %d, want %d", denied.Code, http.StatusForbidden)
+	}
+
+	trustedHandler, err := Handler([]string{"https://admin.example"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	allowed := httptest.NewRecorder()
+	trustedHandler.ServeHTTP(allowed, request("https://admin.example"))
+	if allowed.Code != http.StatusOK {
+		t.Fatalf("trusted origin status = %d: %s", allowed.Code, allowed.Body.String())
+	}
+
+	if _, err = Handler([]string{"not-an-origin"}); err == nil {
+		t.Fatal("invalid trusted origin was accepted")
 	}
 }
 

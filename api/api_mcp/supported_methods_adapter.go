@@ -19,7 +19,7 @@ const (
 	mcpProtocolVersion    = "2026-07-28"
 )
 
-func Handler() http.Handler {
+func Handler(trustedOrigins []string) (http.Handler, error) {
 	handler := mcp.NewStreamableHTTPHandler(
 		func(*http.Request) *mcp.Server {
 			return newMCPServer()
@@ -31,6 +31,11 @@ func Handler() http.Handler {
 		},
 	)
 	crossOriginProtection := http.NewCrossOriginProtection()
+	for _, origin := range trustedOrigins {
+		if err := crossOriginProtection.AddTrustedOrigin(origin); err != nil {
+			return nil, err
+		}
+	}
 	protectedHandler := crossOriginProtection.Handler(handler)
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Mcp-Protocol-Version") != mcpProtocolVersion {
@@ -38,7 +43,7 @@ func Handler() http.Handler {
 			return
 		}
 		protectedHandler.ServeHTTP(writer, request)
-	})
+	}), nil
 }
 
 func newMCPServer() *mcp.Server {

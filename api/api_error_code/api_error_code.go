@@ -6,11 +6,10 @@ import "errors"
 const (
 	Success = 0
 
-	MethodNotFound           = 10001
-	MethodNotSupported       = 10002
-	InvalidArguments         = 10003
-	PermissionDenied         = 10004
-	VerifyCodeDeliveryFailed = 10005
+	MethodNotFound     = 10001
+	MethodNotSupported = 10002
+	InvalidArguments   = 10003
+	PermissionDenied   = 10004
 )
 
 type Error struct {
@@ -46,9 +45,5 @@ var (
 	ErrPermissionDenied = &Error{
 		Code:    PermissionDenied,
 		Message: "permission denied",
-	}
-	ErrVerifyCodeDeliveryFailed = &Error{
-		Code:    VerifyCodeDeliveryFailed,
-		Message: "verification code delivery failed",
 	}
 )

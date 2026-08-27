@@ -1,10 +1,10 @@
-> 本文件由 `gen_api_docs.sh` 从方法注册表生成（v0.0.12，共 15 个方法），禁止手改；新增方法后重新执行生成。
+> 本文件由 `gen_api_docs.sh` 从方法注册表生成（v0.0.1，共 30 个方法），禁止手改；新增方法后重新执行生成。
 
 # 1. 统一调用方式
 
-所有方法经同一入口调用，JSON-RPC over HTTP、MCP、WebSocket、gRPC 只是外壳不同，
-运输同一份请求和同一份结果。业务方法由 `params.name` 选择，业务入参放在
-`params.arguments`：
+管理方法统一注册在 Supported Methods Registry，并由 APIExecuter 完成 scope 门禁后调用
+Ability。MCP Adapter 使用 `tools/call → name → arguments`；资源化 HTTP Adapter
+把 `/api/*` 路由映射为相同的方法名和 arguments。下面是 MCP 调用示例：
 
 ```json
 {
@@ -12,19 +12,15 @@
   "id": "request-id",
   "method": "tools/call",
   "params": {
-    "name": "auth.login.email",
-    "arguments": {
-      "email": "user@example.com",
-      "password": "password"
-    }
+    "name": "models.list",
+    "arguments": {}
   }
 }
 ```
 
-统一返回 MCP `CallToolResult`：成功 `isError=false`，`content[0].text`
-直接承载业务 JSON；业务失败（含未注册方法、参数不合法、鉴权失败）HTTP 状态仍为
-200，`isError=true`，`content[0].text` 为
-`{"error_code":...,"error_msg":"..."}`。
+MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输出 `isError`；
+协议损坏或未知 tool 使用 MCP/JSON-RPC 协议错误。HTTP Adapter 使用 HTTP 状态表达认证、
+参数和业务错误，但仍执行同一个注册项。
 
 **方法节怎么读**：每个方法节给出方法语义、`arguments` **传参举例**（必填字段的
 实际请求形态，占位值按真实值替换）与 `arguments` **JSON Schema**（机器可校验的
@@ -40,7 +36,6 @@
 | 10002 | method is not supported |
 | 10003 | invalid arguments |
 | 10004 | permission denied |
-| 10005 | verification code delivery failed |
 
 # 3. test
 
@@ -55,17 +50,45 @@
 }
 ```
 
-# 4. Auth
+# 4. Models
 
-## 4.1. auth.verify_code.send.email
+## 4.1. models.list
 
-发送邮箱验证码
+列出已注册模型
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+## 4.2. models.scan
+
+扫描模型目录
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+## 4.3. models.get
+
+读取模型
 
 `arguments` 传参举例（仅含必填字段）：
 
 ```json
 {
-  "email": "<email>"
+  "id": "<id>"
 }
 ```
 
@@ -75,32 +98,30 @@
 {
   "additionalProperties": false,
   "properties": {
-    "email": {
-      "format": "email",
-      "maxLength": 320,
-      "minLength": 3,
+    "id": {
       "type": "string"
     }
   },
   "required": [
-    "email"
+    "id"
   ],
   "type": "object"
 }
 ```
 
-## 4.2. auth.verify_code.check.email
+## 4.4. models.register_huggingface
 
-检查邮箱验证码
+注册 Hugging Face 模型
 
 `arguments` 传参举例（仅含必填字段）：
 
 ```json
 {
-  "email": "<email>",
-  "verify_code": "<verify_code>"
+  "repository": "<repository>"
 }
 ```
+
+可选字段：`revision`。
 
 `arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
 
@@ -108,34 +129,30 @@
 {
   "additionalProperties": false,
   "properties": {
-    "email": {
-      "format": "email",
-      "maxLength": 320,
-      "minLength": 3,
+    "repository": {
       "type": "string"
     },
-    "verify_code": {
-      "pattern": "^[0-9]{6}$",
+    "revision": {
       "type": "string"
     }
   },
   "required": [
-    "email",
-    "verify_code"
+    "repository"
   ],
   "type": "object"
 }
 ```
 
-## 4.3. auth.verify_code.send.sms
+## 4.5. models.register_local
 
-发送短信验证码（暂不支持）
+注册本地模型
 
 `arguments` 传参举例（仅含必填字段）：
 
 ```json
 {
-  "phone": "<phone>"
+  "name": "<name>",
+  "path": "<path>"
 }
 ```
 
@@ -145,30 +162,34 @@
 {
   "additionalProperties": false,
   "properties": {
-    "phone": {
-      "pattern": "^\\+[1-9][0-9]{7,14}$",
+    "name": {
+      "type": "string"
+    },
+    "path": {
       "type": "string"
     }
   },
   "required": [
-    "phone"
+    "name",
+    "path"
   ],
   "type": "object"
 }
 ```
 
-## 4.4. auth.verify_code.check.sms
+## 4.6. models.delete
 
-检查短信验证码（暂不支持）
+删除模型
 
 `arguments` 传参举例（仅含必填字段）：
 
 ```json
 {
-  "phone": "<phone>",
-  "verify_code": "<verify_code>"
+  "id": "<id>"
 }
 ```
+
+可选字段：`files`。
 
 `arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
 
@@ -176,35 +197,104 @@
 {
   "additionalProperties": false,
   "properties": {
-    "phone": {
-      "pattern": "^\\+[1-9][0-9]{7,14}$",
-      "type": "string"
+    "files": {
+      "type": "boolean"
     },
-    "verify_code": {
-      "pattern": "^[0-9]{6}$",
+    "id": {
       "type": "string"
     }
   },
   "required": [
-    "phone",
-    "verify_code"
+    "id"
   ],
   "type": "object"
 }
 ```
 
-## 4.5. auth.register
+# 5. Gpu
 
-使用邮箱验证码注册账户；user_name 为注册必填主标识
+## 5.1. gpu.list
+
+列出 NVIDIA GPU 状态
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+# 6. Downloads
+
+## 6.1. downloads.list
+
+列出下载任务
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+## 6.2. downloads.start
+
+启动模型下载
+
+异步方法：受理后返回 `task_id`，进度与结果经任务查询方法读取。
+
+`arguments` 传参举例（仅含必填字段）：
+
+```json
+{}
+```
+
+可选字段：`destination`、`id`、`model_id`、`repository`、`revision`、`token`。
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "destination": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string"
+    },
+    "model_id": {
+      "type": "string"
+    },
+    "repository": {
+      "type": "string"
+    },
+    "revision": {
+      "type": "string"
+    },
+    "token": {
+      "type": "string"
+    }
+  },
+  "type": "object"
+}
+```
+
+## 6.3. downloads.status
+
+读取下载状态
 
 `arguments` 传参举例（仅含必填字段）：
 
 ```json
 {
-  "email": "<email>",
-  "password": "<password>",
-  "user_name": "<user_name>",
-  "verify_code": "<verify_code>"
+  "id": "<id>"
 }
 ```
 
@@ -214,48 +304,26 @@
 {
   "additionalProperties": false,
   "properties": {
-    "email": {
-      "format": "email",
-      "maxLength": 320,
-      "minLength": 3,
-      "type": "string"
-    },
-    "password": {
-      "maxLength": 128,
-      "minLength": 15,
-      "type": "string"
-    },
-    "user_name": {
-      "maxLength": 32,
-      "minLength": 3,
-      "type": "string"
-    },
-    "verify_code": {
-      "pattern": "^[0-9]{6}$",
+    "id": {
       "type": "string"
     }
   },
   "required": [
-    "user_name",
-    "email",
-    "password",
-    "verify_code"
+    "id"
   ],
   "type": "object"
 }
 ```
 
-## 4.6. auth.login.email
+## 6.4. downloads.logs
 
-使用邮箱登录
+读取下载日志
 
 `arguments` 传参举例（仅含必填字段）：
 
 ```json
 {
-  "email": "<email>",
-  "login_method": "password",
-  "password": "<password>"
+  "id": "<id>"
 }
 ```
 
@@ -265,47 +333,28 @@
 {
   "additionalProperties": false,
   "properties": {
-    "email": {
-      "format": "email",
-      "maxLength": 320,
-      "minLength": 3,
-      "type": "string"
-    },
-    "login_method": {
-      "enum": [
-        "password"
-      ],
-      "type": "string"
-    },
-    "password": {
-      "maxLength": 128,
-      "minLength": 1,
+    "id": {
       "type": "string"
     }
   },
   "required": [
-    "login_method",
-    "email",
-    "password"
+    "id"
   ],
   "type": "object"
 }
 ```
 
-## 4.7. auth.login.phone
+## 6.5. downloads.cancel
 
-使用手机号登录
+取消下载
 
 `arguments` 传参举例（仅含必填字段）：
 
 ```json
 {
-  "login_method": "password",
-  "phone": "<phone>"
+  "id": "<id>"
 }
 ```
-
-可选字段：`password`、`verify_code`。
 
 `arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
 
@@ -313,46 +362,149 @@
 {
   "additionalProperties": false,
   "properties": {
-    "login_method": {
-      "enum": [
-        "password",
-        "verify_code"
-      ],
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+}
+```
+
+## 6.6. downloads.retry
+
+重试下载
+
+`arguments` 传参举例（仅含必填字段）：
+
+```json
+{
+  "id": "<id>"
+}
+```
+
+可选字段：`token`。
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "id": {
       "type": "string"
     },
-    "password": {
-      "maxLength": 128,
-      "minLength": 1,
+    "token": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+}
+```
+
+# 7. Runtime
+
+## 7.1. runtime.status
+
+读取 vLLM Runtime 状态
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+## 7.2. runtime.start
+
+启动 vLLM Runtime
+
+`arguments` 传参举例（仅含必填字段）：
+
+```json
+{
+  "options": "<options>"
+}
+```
+
+可选字段：`health_url`。
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "health_url": {
       "type": "string"
     },
-    "phone": {
-      "pattern": "^\\+[1-9][0-9]{7,14}$",
+    "options": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "options"
+  ],
+  "type": "object"
+}
+```
+
+## 7.3. runtime.restart
+
+重启 vLLM Runtime
+
+`arguments` 传参举例（仅含必填字段）：
+
+```json
+{
+  "options": "<options>"
+}
+```
+
+可选字段：`health_url`。
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "health_url": {
       "type": "string"
     },
-    "verify_code": {
-      "pattern": "^[0-9]{6}$",
-      "type": "string"
+    "options": {
+      "type": "object"
     }
   },
   "required": [
-    "login_method",
-    "phone"
+    "options"
   ],
   "type": "object"
 }
 ```
 
-## 4.8. auth.logout
+## 7.4. runtime.switch
 
-撤销当前登录状态
+切换活动模型
 
 `arguments` 传参举例（仅含必填字段）：
 
 ```json
 {
-  "jwt_token": "<jwt_token>"
+  "model_id": "<model_id>",
+  "options": "<options>"
 }
 ```
+
+可选字段：`health_url`。
 
 `arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
 
@@ -360,172 +512,53 @@
 {
   "additionalProperties": false,
   "properties": {
-    "jwt_token": {
-      "maxLength": 8192,
-      "minLength": 1,
-      "type": "string"
-    }
-  },
-  "required": [
-    "jwt_token"
-  ],
-  "type": "object"
-}
-```
-
-## 4.9. auth.jwt_token.check
-
-检查 JWT token 并返回当前身份
-
-`arguments` 传参举例（仅含必填字段）：
-
-```json
-{
-  "jwt_token": "<jwt_token>"
-}
-```
-
-`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "jwt_token": {
-      "maxLength": 8192,
-      "minLength": 1,
-      "type": "string"
-    }
-  },
-  "required": [
-    "jwt_token"
-  ],
-  "type": "object"
-}
-```
-
-## 4.10. auth.jwt_token.refresh
-
-轮换 refresh token 并签发新 JWT token
-
-`arguments` 传参举例（仅含必填字段）：
-
-```json
-{
-  "refresh_token": "<refresh_token>"
-}
-```
-
-`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "refresh_token": {
-      "maxLength": 8192,
-      "minLength": 1,
-      "type": "string"
-    }
-  },
-  "required": [
-    "refresh_token"
-  ],
-  "type": "object"
-}
-```
-
-# 5. User
-
-## 5.1. user.nickname.change
-
-修改当前用户昵称
-
-`arguments` 传参举例（仅含必填字段）：
-
-```json
-{
-  "jwt_token": "<jwt_token>",
-  "nick_name": "<nick_name>"
-}
-```
-
-`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "jwt_token": {
-      "maxLength": 8192,
-      "minLength": 1,
+    "health_url": {
       "type": "string"
     },
-    "nick_name": {
-      "maxLength": 32,
-      "minLength": 1,
-      "type": "string"
-    }
-  },
-  "required": [
-    "jwt_token",
-    "nick_name"
-  ],
-  "type": "object"
-}
-```
-
-# 6. Task
-
-## 6.1. task.get
-
-查询我的异步任务状态与结果
-
-`arguments` 传参举例（仅含必填字段）：
-
-```json
-{
-  "jwt_token": "<jwt_token>",
-  "task_id": "<task_id>"
-}
-```
-
-`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "jwt_token": {
-      "maxLength": 8192,
-      "minLength": 1,
+    "model_id": {
       "type": "string"
     },
-    "task_id": {
-      "maxLength": 36,
-      "minLength": 36,
-      "type": "string"
+    "options": {
+      "type": "object"
     }
   },
   "required": [
-    "jwt_token",
-    "task_id"
+    "model_id",
+    "options"
   ],
   "type": "object"
 }
 ```
 
-## 6.2. task.list
+## 7.5. runtime.stop
 
-列出我的异步任务（新→旧，最多 50 条）
+停止 vLLM Runtime
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+# 8. Api_keys
+
+## 8.1. api_keys.create
+
+创建 API Key
 
 `arguments` 传参举例（仅含必填字段）：
 
 ```json
 {
-  "jwt_token": "<jwt_token>"
+  "scopes": "<scopes>"
 }
 ```
+
+可选字段：`name`。
 
 `arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
 
@@ -533,53 +566,246 @@
 {
   "additionalProperties": false,
   "properties": {
-    "jwt_token": {
-      "maxLength": 8192,
-      "minLength": 1,
-      "type": "string"
-    }
-  },
-  "required": [
-    "jwt_token"
-  ],
-  "type": "object"
-}
-```
-
-## 6.3. task.cancel
-
-取消我的排队中任务（执行中任务不可取消）
-
-`arguments` 传参举例（仅含必填字段）：
-
-```json
-{
-  "jwt_token": "<jwt_token>",
-  "task_id": "<task_id>"
-}
-```
-
-`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
-
-```json
-{
-  "additionalProperties": false,
-  "properties": {
-    "jwt_token": {
-      "maxLength": 8192,
-      "minLength": 1,
+    "name": {
       "type": "string"
     },
-    "task_id": {
-      "maxLength": 36,
-      "minLength": 36,
+    "scopes": {
+      "items": {
+        "type": "string"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "scopes"
+  ],
+  "type": "object"
+}
+```
+
+## 8.2. api_keys.list
+
+列出 API Key
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+## 8.3. api_keys.enable
+
+启用 API Key
+
+`arguments` 传参举例（仅含必填字段）：
+
+```json
+{
+  "id": "<id>"
+}
+```
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "id": {
       "type": "string"
     }
   },
   "required": [
-    "jwt_token",
-    "task_id"
+    "id"
   ],
+  "type": "object"
+}
+```
+
+## 8.4. api_keys.disable
+
+禁用 API Key
+
+`arguments` 传参举例（仅含必填字段）：
+
+```json
+{
+  "id": "<id>"
+}
+```
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+}
+```
+
+## 8.5. api_keys.delete
+
+删除 API Key
+
+`arguments` 传参举例（仅含必填字段）：
+
+```json
+{
+  "id": "<id>"
+}
+```
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "id"
+  ],
+  "type": "object"
+}
+```
+
+# 9. Settings
+
+## 9.1. settings.list
+
+读取设置
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+## 9.2. settings.update
+
+更新设置
+
+`arguments` 传参举例（仅含必填字段）：
+
+```json
+{
+  "settings": "<settings>"
+}
+```
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "settings": {
+      "items": {
+        "type": "object"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "settings"
+  ],
+  "type": "object"
+}
+```
+
+# 10. Requests
+
+## 10.1. requests.recent
+
+读取最近请求
+
+`arguments` 传参举例（仅含必填字段）：
+
+```json
+{}
+```
+
+可选字段：`limit`。
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "limit": {
+      "maximum": 500,
+      "minimum": 1,
+      "type": "integer"
+    }
+  },
+  "type": "object"
+}
+```
+
+# 11. System
+
+## 11.1. system.get
+
+读取系统信息
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+# 12. Mcp
+
+## 12.1. mcp.status
+
+读取 MCP 状态
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
+  "type": "object"
+}
+```
+
+# 13. Dashboard
+
+## 13.1. dashboard.get
+
+读取管理面板摘要
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {},
   "type": "object"
 }
 ```

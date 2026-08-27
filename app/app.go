@@ -109,7 +109,12 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 	ability_api_key.Setup(keys)
 	ability_settings.Setup(st)
 	ability.LoadAbilityAPIMethods()
-	management := &api_http.Server{Keys: keys, AdminToken: c.AdminToken, RequireAdmin: true, MCP: api_mcp.Handler(), Web: webui.Handler()}
+	mcpHandler, err := api_mcp.Handler(c.MCPAllowedOrigins)
+	if err != nil {
+		slog.Error("invalid MCP trusted origin", "error", err)
+		return 2
+	}
+	management := &api_http.Server{Keys: keys, AdminToken: c.AdminToken, RequireAdmin: true, MCP: mcpHandler, Web: webui.Handler()}
 
 	upstream, err := url.Parse(c.Upstream)
 	if err != nil || upstream.Scheme == "" || upstream.Host == "" {

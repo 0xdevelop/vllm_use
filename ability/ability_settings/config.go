@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"net"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -67,6 +68,12 @@ func (c Config) Validate() error {
 	}
 	if c.HFHome != "" && !filepath.IsAbs(c.HFHome) {
 		return errors.New("HF home must be absolute")
+	}
+	crossOriginProtection := http.NewCrossOriginProtection()
+	for _, origin := range c.MCPAllowedOrigins {
+		if err := crossOriginProtection.AddTrustedOrigin(origin); err != nil {
+			return errors.New("invalid MCP trusted origin: " + err.Error())
+		}
 	}
 	host, _, err := net.SplitHostPort(c.Listen)
 	if err != nil {

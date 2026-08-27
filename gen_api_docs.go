@@ -205,7 +205,6 @@ func renderErrorCodeTable() (string, error) {
 		api_error_code.ErrMethodNotSupported,
 		api_error_code.ErrInvalidArguments,
 		api_error_code.ErrPermissionDenied,
-		api_error_code.ErrVerifyCodeDeliveryFailed,
 	} {
 		businessError, ok := api_error_code.As(definedError)
 		if !ok {
@@ -217,9 +216,9 @@ func renderErrorCodeTable() (string, error) {
 }
 
 const unifiedCallBody = `
-所有方法经同一入口调用，JSON-RPC over HTTP、MCP、WebSocket、gRPC 只是外壳不同，
-运输同一份请求和同一份结果。业务方法由 ` + "`params.name`" + ` 选择，业务入参放在
-` + "`params.arguments`" + `：
+管理方法统一注册在 Supported Methods Registry，并由 APIExecuter 完成 scope 门禁后调用
+Ability。MCP Adapter 使用 ` + "`tools/call → name → arguments`" + `；资源化 HTTP Adapter
+把 ` + "`/api/*`" + ` 路由映射为相同的方法名和 arguments。下面是 MCP 调用示例：
 
 ` + "```json" + `
 {
@@ -227,19 +226,15 @@ const unifiedCallBody = `
   "id": "request-id",
   "method": "tools/call",
   "params": {
-    "name": "auth.login.email",
-    "arguments": {
-      "email": "user@example.com",
-      "password": "password"
-    }
+    "name": "models.list",
+    "arguments": {}
   }
 }
 ` + "```" + `
 
-统一返回 MCP ` + "`CallToolResult`" + `：成功 ` + "`isError=false`" + `，` + "`content[0].text`" + `
-直接承载业务 JSON；业务失败（含未注册方法、参数不合法、鉴权失败）HTTP 状态仍为
-200，` + "`isError=true`" + `，` + "`content[0].text`" + ` 为
-` + "`{\"error_code\":...,\"error_msg\":\"...\"}`" + `。
+MCP 已注册 tool 的业务结果统一返回 ` + "`CallToolResult`" + `，并显式输出 ` + "`isError`" + `；
+协议损坏或未知 tool 使用 MCP/JSON-RPC 协议错误。HTTP Adapter 使用 HTTP 状态表达认证、
+参数和业务错误，但仍执行同一个注册项。
 
 **方法节怎么读**：每个方法节给出方法语义、` + "`arguments`" + ` **传参举例**（必填字段的
 实际请求形态，占位值按真实值替换）与 ` + "`arguments`" + ` **JSON Schema**（机器可校验的
