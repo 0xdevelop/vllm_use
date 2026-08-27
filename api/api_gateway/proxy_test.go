@@ -189,6 +189,35 @@ func TestRecorderCannotBlockRequest(t *testing.T) {
 	}
 }
 
+func TestWaitRecordsDrainsAcceptedAuditWrites(t *testing.T) {
+	u, _ := url.Parse("http://127.0.0.1:8000")
+	started := make(chan struct{})
+	release := make(chan struct{})
+	g := NewWithOptions(u, VerifyFunc(func(context.Context, string, string) (Principal, error) { return Principal{}, nil }), Options{Record: func(context.Context, RequestMetadata) {
+		close(started)
+		<-release
+	}})
+	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/completions", nil)
+	req.Header.Set("Authorization", "Bearer ok")
+	g.ServeHTTP(httptest.NewRecorder(), req)
+	<-started
+
+	timeout, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := g.WaitRecords(timeout); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WaitRecords before release = %v", err)
+	}
+	close(release)
+	ctx, cancelWait := context.WithTimeout(context.Background(), time.Second)
+	defer cancelWait()
+	if err := g.WaitRecords(ctx); err != nil {
+		t.Fatalf("WaitRecords after release = %v", err)
+	}
+}
+
 func TestSSEIsFlushedBeforeCompletion(t *testing.T) {
 	u, _ := url.Parse("http://upstream.invalid")
 	g := New(u, VerifyFunc(func(context.Context, string, string) (Principal, error) { return Principal{}, nil }))

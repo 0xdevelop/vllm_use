@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,6 +36,9 @@ type Gateway struct {
 	aliases     map[string]string
 	record      func(context.Context, RequestMetadata)
 	recordSlots chan struct{}
+	recordMu    sync.Mutex
+	recordCount int
+	recordIdle  chan struct{}
 }
 type RequestMetadata struct {
 	RequestID, Method, Path, Model, KeyID, RemoteAddr string
@@ -68,8 +72,43 @@ func NewWithOptions(upstream *url.URL, v Verifier, o Options) *Gateway {
 			r.Header.Set("Authorization", "Bearer "+o.UpstreamKey)
 		}
 	}
-	return &Gateway{proxy: p, verify: v, upstreamKey: o.UpstreamKey, aliases: o.Aliases, record: o.Record, recordSlots: make(chan struct{}, 64)}
+	idle := make(chan struct{})
+	close(idle)
+	return &Gateway{proxy: p, verify: v, upstreamKey: o.UpstreamKey, aliases: o.Aliases, record: o.Record, recordSlots: make(chan struct{}, 64), recordIdle: idle}
 }
+
+// WaitRecords waits for audit writes accepted before this call. Call it after
+// the HTTP server has stopped accepting requests and before closing the store.
+func (g *Gateway) WaitRecords(ctx context.Context) error {
+	g.recordMu.Lock()
+	idle := g.recordIdle
+	g.recordMu.Unlock()
+	select {
+	case <-idle:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (g *Gateway) beginRecord() {
+	g.recordMu.Lock()
+	if g.recordCount == 0 {
+		g.recordIdle = make(chan struct{})
+	}
+	g.recordCount++
+	g.recordMu.Unlock()
+}
+
+func (g *Gateway) finishRecord() {
+	g.recordMu.Lock()
+	g.recordCount--
+	if g.recordCount == 0 {
+		close(g.recordIdle)
+	}
+	g.recordMu.Unlock()
+}
+
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	rid := r.Header.Get("X-Request-ID")
@@ -92,8 +131,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			meta.Duration = time.Since(started)
 			select {
 			case g.recordSlots <- struct{}{}:
+				g.beginRecord()
 				go func() {
-					defer func() { <-g.recordSlots }()
+					defer func() {
+						g.finishRecord()
+						<-g.recordSlots
+					}()
 					ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 					defer cancel()
 					g.record(ctx, meta)

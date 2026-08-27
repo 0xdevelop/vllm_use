@@ -143,6 +143,9 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 		defer cancel()
 		_ = supervisor.Stop(shutdownCtx)
 		_ = httpServer.Shutdown(shutdownCtx)
+		if waitErr := proxy.WaitRecords(shutdownCtx); waitErr != nil {
+			slog.Warn("drain gateway audit records", "error", waitErr)
+		}
 	}()
 
 	slog.Info("listening", "address", c.Listen)
@@ -152,6 +155,9 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 		defer cancel()
 		_ = supervisor.Stop(shutdownCtx)
 		_ = httpServer.Shutdown(shutdownCtx)
+		if waitErr := proxy.WaitRecords(shutdownCtx); waitErr != nil {
+			slog.Warn("drain gateway audit records", "error", waitErr)
+		}
 		return 1
 	}
 	if ctx.Err() != nil {
