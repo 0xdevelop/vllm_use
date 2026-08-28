@@ -2,6 +2,8 @@ package sqlite
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -130,7 +132,12 @@ type APIRequest struct {
 }
 
 func (s *Store) RecordRequest(ctx context.Context, v APIRequest) error {
-	_, e := s.DB.ExecContext(ctx, `INSERT INTO api_requests(id,request_id,method,path,model,status_code,duration_ms,key_id,remote_addr,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, v.RequestID, v.RequestID, v.Method, v.Path, v.Model, v.StatusCode, v.DurationMS, null(v.KeyID), v.RemoteAddr, time.Now().UTC().Format(time.RFC3339Nano))
+	idBytes := make([]byte, 16)
+	if _, e := rand.Read(idBytes); e != nil {
+		return fmt.Errorf("generate request audit id: %w", e)
+	}
+	id := hex.EncodeToString(idBytes)
+	_, e := s.DB.ExecContext(ctx, `INSERT INTO api_requests(id,request_id,method,path,model,status_code,duration_ms,key_id,remote_addr,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, v.RequestID, v.Method, v.Path, v.Model, v.StatusCode, v.DurationMS, null(v.KeyID), v.RemoteAddr, time.Now().UTC().Format(time.RFC3339Nano))
 	return e
 }
 func (s *Store) RecentRequests(ctx context.Context, limit int) ([]APIRequest, error) {

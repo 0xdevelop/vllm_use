@@ -40,8 +40,11 @@ func TestSettingsRuntimeConfigAndRequestsCRUD(t *testing.T) {
 	if err = s.RecordRequest(ctx, APIRequest{RequestID: "req-1", Method: "POST", Path: "/v1/responses", StatusCode: 200, DurationMS: 12}); err != nil {
 		t.Fatal(err)
 	}
+	if err = s.RecordRequest(ctx, APIRequest{RequestID: "req-1", Method: "POST", Path: "/v1/responses", StatusCode: 502, DurationMS: 13}); err != nil {
+		t.Fatalf("duplicate client request id should not drop audit event: %v", err)
+	}
 	recent, err := s.RecentRequests(ctx, 10)
-	if err != nil || len(recent) != 1 || recent[0].RequestID != "req-1" {
+	if err != nil || len(recent) != 2 || recent[0].RequestID != "req-1" || recent[1].RequestID != "req-1" {
 		t.Fatalf("recent=%v err=%v", recent, err)
 	}
 }
