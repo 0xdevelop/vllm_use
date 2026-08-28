@@ -251,3 +251,70 @@ func TestConcurrentDestinationRejected(t *testing.T) {
 		t.Fatalf("same destination result: %v", err)
 	}
 }
+
+type lifecycleRunner struct {
+	started chan struct{}
+}
+
+func (r *lifecycleRunner) CommandContext(ctx context.Context, _ string, _ ...string) Command {
+	return &lifecycleCommand{ctx: ctx, started: r.started}
+}
+
+type lifecycleCommand struct {
+	ctx     context.Context
+	started chan struct{}
+}
+
+func (c *lifecycleCommand) StdoutPipe() (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (c *lifecycleCommand) StderrPipe() (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (c *lifecycleCommand) Start() error {
+	close(c.started)
+	return nil
+}
+func (c *lifecycleCommand) Wait() error {
+	<-c.ctx.Done()
+	return c.ctx.Err()
+}
+
+func TestDownloadOutlivesRequestAndShutdownPersistsCancellation(t *testing.T) {
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	runner := &lifecycleRunner{started: make(chan struct{})}
+	d := New("hf", runner)
+	d.SetStore(st)
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	if _, err = d.Download(requestCtx, "service-owned", "org/model", "/models/service-owned", ""); err != nil {
+		t.Fatal(err)
+	}
+	<-runner.started
+	cancelRequest()
+	time.Sleep(20 * time.Millisecond)
+	if job, ok := d.Status("service-owned"); !ok || job.State != Running {
+		t.Fatalf("request cancellation terminated accepted download: %#v", job)
+	}
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), time.Second)
+	defer cancelShutdown()
+	if err = d.Shutdown(shutdownCtx); err != nil {
+		t.Fatal(err)
+	}
+	job, ok := d.Status("service-owned")
+	if !ok || job.State != Canceled || !strings.Contains(job.Error, "canceled") {
+		t.Fatalf("shutdown state %#v", job)
+	}
+	var state string
+	if err = st.DB.QueryRow(`SELECT state FROM downloads WHERE id='service-owned'`).Scan(&state); err != nil || state != string(Canceled) {
+		t.Fatalf("persisted shutdown state %q err=%v", state, err)
+	}
+	if _, err = d.Download(context.Background(), "late", "org/model", "/models/late", ""); err == nil || !strings.Contains(err.Error(), "shutting down") {
+		t.Fatalf("post-shutdown start result: %v", err)
+	}
+}

@@ -28,7 +28,7 @@ func LoadAPIMethods() {
 		if err := api_supported_methods.DecodeArguments(input, &in); err != nil {
 			return nil, err
 		}
-		return downloader().DownloadRequest(context.WithoutCancel(ctx), in)
+		return downloader().DownloadRequest(ctx, in)
 	})
 	add(MethodStatus, "读取下载状态", map[string]interface{}{"id": str()}, []string{"id"}, func(_ context.Context, input interface{}) (interface{}, error) {
 		id, err := inputID(input)

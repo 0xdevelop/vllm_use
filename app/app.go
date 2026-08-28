@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/0xdevelop/vllm-use/ability"
@@ -136,35 +137,38 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 	httpServer := &http.Server{Addr: c.Listen, Handler: mux, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, WriteTimeout: 0, IdleTimeout: 120 * time.Second, MaxHeaderBytes: 1 << 20}
 
 	shutdownDone := make(chan struct{})
+	var shutdownOnce sync.Once
+	shutdown := func() {
+		shutdownOnce.Do(func() {
+			defer close(shutdownDone)
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			// Stop accepting work before terminating service-owned processes or
+			// closing their SQLite persistence.
+			_ = httpServer.Shutdown(shutdownCtx)
+			if shutdownErr := downloads.Shutdown(shutdownCtx); shutdownErr != nil {
+				slog.Warn("stop model downloads", "error", shutdownErr)
+			}
+			_ = supervisor.Stop(shutdownCtx)
+			if waitErr := proxy.WaitRecords(shutdownCtx); waitErr != nil {
+				slog.Warn("drain gateway audit records", "error", waitErr)
+			}
+		})
+		<-shutdownDone
+	}
 	go func() {
-		defer close(shutdownDone)
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_ = supervisor.Stop(shutdownCtx)
-		_ = httpServer.Shutdown(shutdownCtx)
-		if waitErr := proxy.WaitRecords(shutdownCtx); waitErr != nil {
-			slog.Warn("drain gateway audit records", "error", waitErr)
-		}
+		shutdown()
 	}()
 
 	slog.Info("listening", "address", c.Listen)
 	if err = httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		slog.Error("server stopped", "error", err)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		_ = supervisor.Stop(shutdownCtx)
-		_ = httpServer.Shutdown(shutdownCtx)
-		if waitErr := proxy.WaitRecords(shutdownCtx); waitErr != nil {
-			slog.Warn("drain gateway audit records", "error", waitErr)
-		}
+		shutdown()
 		return 1
 	}
 	if ctx.Err() != nil {
 		<-shutdownDone
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	_ = supervisor.Stop(shutdownCtx)
 	return 0
 }

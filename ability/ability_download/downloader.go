@@ -73,6 +73,10 @@ type Downloader struct {
 	store   *sqlite.Store
 	root    string
 	hfHome  string
+	ctx     context.Context
+	cancel  context.CancelFunc
+	wg      sync.WaitGroup
+	closed  bool
 }
 
 func (d *Downloader) SetStore(s *sqlite.Store) {
@@ -104,7 +108,8 @@ func NewWithOptions(cli string, r Runner, maxWorkers, maxLogs int) *Downloader {
 	if maxLogs < 1 {
 		maxLogs = 1
 	}
-	return &Downloader{cli: cli, runner: r, jobs: map[string]*Job{}, workers: make(chan struct{}, maxWorkers), maxLogs: maxLogs}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Downloader{cli: cli, runner: r, jobs: map[string]*Job{}, workers: make(chan struct{}, maxWorkers), maxLogs: maxLogs, ctx: ctx, cancel: cancel}
 }
 func (d *Downloader) Download(parent context.Context, id, repo, dest, token string) (*Job, error) {
 	return d.DownloadRequest(parent, Request{ID: id, Repository: repo, Destination: dest, Token: token})
@@ -192,6 +197,10 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 		}
 	}
 	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil, errors.New("download service is shutting down")
+	}
 	if j := d.jobs[id]; j != nil && j.State == Running {
 		d.mu.Unlock()
 		return nil, errors.New("download already running")
@@ -208,21 +217,26 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 			return nil, errors.New("download runner cannot securely receive a token")
 		}
 	}
-	ctx, cancel := context.WithCancel(parent)
+	// Downloads are service-owned asynchronous work: transport/request
+	// cancellation must not terminate them after an accepted response.
+	ctx, cancel := context.WithCancel(d.ctx)
 	j := &Job{ID: id, ModelID: modelID, Repo: repo, Revision: revision, Destination: dest, State: Running, cancel: cancel, secret: token}
 	now := time.Now().UTC()
 	j.StartedAt = &now
 	d.jobs[id] = j
 	d.persistLocked(j)
 	d.updateModelLocked(j, Running)
+	d.wg.Add(1)
 	d.mu.Unlock()
 	select {
 	case d.workers <- struct{}{}:
-	case <-parent.Done():
-		d.finish(j, Canceled, parent.Err())
-		return j, parent.Err()
+	case <-ctx.Done():
+		d.finish(j, Canceled, ctx.Err())
+		d.wg.Done()
+		return j, ctx.Err()
 	default:
 		d.finish(j, Failed, errors.New("maximum concurrent downloads reached"))
+		d.wg.Done()
 		return j, errors.New("maximum concurrent downloads reached")
 	}
 	args := []string{"download", repo, "--local-dir", dest}
@@ -245,6 +259,7 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 		cancel()
 		<-d.workers
 		d.finish(j, Failed, e)
+		d.wg.Done()
 		return j, e
 	}
 	errout, e := cmd.StderrPipe()
@@ -252,18 +267,21 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 		cancel()
 		<-d.workers
 		d.finish(j, Failed, e)
+		d.wg.Done()
 		return j, e
 	}
 	if e = cmd.Start(); e != nil {
 		cancel()
 		<-d.workers
 		d.finish(j, Failed, e)
+		d.wg.Done()
 		return j, e
 	}
 	pipeErrors := make(chan error, 2)
 	go func() { pipeErrors <- d.consume(j, out, token) }()
 	go func() { pipeErrors <- d.consume(j, errout, token) }()
 	go func() {
+		defer d.wg.Done()
 		e := cmd.Wait()
 		for i := 0; i < 2; i++ {
 			if pe := <-pipeErrors; pe != nil && e == nil {
@@ -490,6 +508,30 @@ func (d *Downloader) Retry(ctx context.Context, id, token string) (*Job, error) 
 	}
 	return d.DownloadRequest(ctx, Request{ID: id, ModelID: j.ModelID, Repository: j.Repo, Revision: j.Revision, Destination: j.Destination, Token: token})
 }
+
+// Shutdown stops accepting new work, cancels every active download, and waits
+// for accepted jobs to reach a persisted terminal state.
+func (d *Downloader) Shutdown(ctx context.Context) error {
+	d.mu.Lock()
+	if !d.closed {
+		d.closed = true
+		d.cancel()
+	}
+	d.mu.Unlock()
+
+	done := make(chan struct{})
+	go func() {
+		d.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 func (d *Downloader) persist(j *Job) { d.mu.RLock(); defer d.mu.RUnlock(); d.persistLocked(j) }
 func (d *Downloader) persistLocked(j *Job) {
 	if d.store == nil {
