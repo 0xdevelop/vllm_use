@@ -702,7 +702,7 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 
 ## 9.2. settings.update
 
-更新设置
+更新非敏感设置（凭据必须通过环境变量或 CLI flags 提供）
 
 `arguments` 传参举例（仅含必填字段）：
 
@@ -720,6 +720,22 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
   "properties": {
     "settings": {
       "items": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "value": {
+            "maxLength": 65536,
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "value"
+        ],
         "type": "object"
       },
       "type": "array"

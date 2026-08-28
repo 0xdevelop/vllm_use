@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"path/filepath"
 	"testing"
 )
@@ -14,16 +15,20 @@ func TestSettingsRuntimeConfigAndRequestsCRUD(t *testing.T) {
 	}
 	defer s.Close()
 	ctx := context.Background()
-	if err = s.PutSettings(ctx, []Setting{{Key: "theme", Value: "dark"}, {Key: "hf_token", Value: "secret", Secret: true}}); err != nil {
+	if err = s.PutSettings(ctx, []Setting{{Key: "theme", Value: "dark"}}); err != nil {
 		t.Fatal(err)
 	}
 	settings, err := s.Settings(ctx)
-	if err != nil || len(settings) != 2 {
+	if err != nil || len(settings) != 1 || settings[0].Key != "theme" || settings[0].Value != "dark" {
 		t.Fatalf("settings=%v err=%v", settings, err)
 	}
-	for _, v := range settings {
-		if v.Secret && v.Value != "" {
-			t.Fatal("secret returned")
+	for _, sensitive := range []Setting{
+		{Key: "hf_token", Value: "secret"},
+		{Key: "upstream_api_key", Value: "secret"},
+		{Key: "database.password", Value: "secret"},
+	} {
+		if err = s.PutSettings(ctx, []Setting{sensitive}); !errors.Is(err, ErrSensitiveSetting) {
+			t.Fatalf("sensitive setting %+v: err=%v", sensitive, err)
 		}
 	}
 	if err = s.SaveRuntimeConfig(ctx, RuntimeConfig{ID: "one", Name: "default", Options: json.RawMessage(`{"port":8000}`)}); err != nil {

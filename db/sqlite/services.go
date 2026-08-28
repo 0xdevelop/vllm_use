@@ -5,18 +5,44 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
 type Setting struct {
 	Key       string    `json:"key"`
 	Value     string    `json:"value,omitempty"`
-	Secret    bool      `json:"secret"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+var ErrSensitiveSetting = errors.New("sensitive settings must be supplied through environment variables or CLI flags")
+
+var sensitiveSettingFragments = []string{
+	"token", "secret", "password", "credential", "api_key", "apikey", "authorization", "private_key",
+}
+
+func validateSetting(v *Setting) error {
+	v.Key = strings.TrimSpace(v.Key)
+	if v.Key == "" {
+		return errors.New("setting key required")
+	}
+	if len(v.Key) > 128 {
+		return errors.New("setting key exceeds 128 bytes")
+	}
+	if len(v.Value) > 64*1024 {
+		return errors.New("setting value exceeds 64 KiB")
+	}
+	key := strings.ToLower(v.Key)
+	for _, fragment := range sensitiveSettingFragments {
+		if strings.Contains(key, fragment) {
+			return ErrSensitiveSetting
+		}
+	}
+	return nil
+}
+
 func (s *Store) Settings(ctx context.Context) ([]Setting, error) {
-	rows, e := s.DB.QueryContext(ctx, `SELECT key,value,secret,updated_at FROM settings ORDER BY key`)
+	rows, e := s.DB.QueryContext(ctx, `SELECT key,value,updated_at FROM settings ORDER BY key`)
 	if e != nil {
 		return nil, fmt.Errorf("list settings: %w", e)
 	}
@@ -24,16 +50,11 @@ func (s *Store) Settings(ctx context.Context) ([]Setting, error) {
 	out := []Setting{}
 	for rows.Next() {
 		var v Setting
-		var sec int
 		var ts string
-		if e = rows.Scan(&v.Key, &v.Value, &sec, &ts); e != nil {
+		if e = rows.Scan(&v.Key, &v.Value, &ts); e != nil {
 			return nil, e
 		}
-		v.Secret = sec == 1
 		v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, ts)
-		if v.Secret {
-			v.Value = ""
-		}
 		out = append(out, v)
 	}
 	return out, rows.Err()
@@ -44,14 +65,12 @@ func (s *Store) PutSettings(ctx context.Context, values []Setting) error {
 		return e
 	}
 	defer tx.Rollback()
-	for _, v := range values {
-		if v.Key == "" {
-			return errors.New("setting key required")
+	for i := range values {
+		v := &values[i]
+		if e = validateSetting(v); e != nil {
+			return e
 		}
-		if v.Secret && v.Value == "" {
-			continue
-		}
-		_, e = tx.ExecContext(ctx, `INSERT INTO settings(key,value,secret,updated_at) VALUES(?,?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,secret=excluded.secret,updated_at=excluded.updated_at`, v.Key, v.Value, boolInt(v.Secret), time.Now().UTC().Format(time.RFC3339Nano))
+		_, e = tx.ExecContext(ctx, `INSERT INTO settings(key,value,secret,updated_at) VALUES(?,?,0,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,secret=0,updated_at=excluded.updated_at`, v.Key, v.Value, time.Now().UTC().Format(time.RFC3339Nano))
 		if e != nil {
 			return fmt.Errorf("update setting %q: %w", v.Key, e)
 		}

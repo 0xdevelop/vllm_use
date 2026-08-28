@@ -20,7 +20,13 @@ func Setup(store *sqlite.Store) { currentStore = store }
 
 func LoadAPIMethods() {
 	add(MethodList, "读取设置", nil, nil, func(ctx context.Context, _ interface{}) (interface{}, error) { return store().Settings(ctx) })
-	add(MethodUpdate, "更新设置", map[string]interface{}{"settings": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "object"}}}, []string{"settings"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+	settingSchema := map[string]interface{}{
+		"type":                 "object",
+		"properties":           map[string]interface{}{"key": map[string]interface{}{"type": "string", "minLength": 1, "maxLength": 128}, "value": map[string]interface{}{"type": "string", "maxLength": 65536}},
+		"required":             []string{"key", "value"},
+		"additionalProperties": false,
+	}
+	add(MethodUpdate, "更新非敏感设置（凭据必须通过环境变量或 CLI flags 提供）", map[string]interface{}{"settings": map[string]interface{}{"type": "array", "items": settingSchema}}, []string{"settings"}, func(ctx context.Context, input interface{}) (interface{}, error) {
 		var in struct {
 			Settings []sqlite.Setting `json:"settings"`
 		}

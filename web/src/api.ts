@@ -9,7 +9,7 @@ export type APIKey={id:string;name:string;prefix:string;enabled:boolean;scopes:S
 export type RequestMetadata={request_id:string;method:string;path:string;model:string;key_id:string;remote_addr:string;status_code:number;duration_ms:number;created_at:string}
 export type MCPRequest={at:string;method?:string;name?:string;key_id?:string;remote_addr?:string;status_code:number;duration_ms:number}
 export type MCPStatus={protocol_version:string;transport:string;stateless:boolean;recent_requests:MCPRequest[]}
-export type Setting={key:string;value?:string;secret:boolean;updated_at:string}
+export type Setting={key:string;value:string;updated_at:string}
 export type SystemStatus={go_version:string;goos:string;goarch:string;cpus:number}
 export type Dashboard={models:number;runtime:Runtime;downloads:DownloadTask[];recent_requests:RequestMetadata[]}
 export class APIError extends Error{constructor(readonly status:number,message:string){super(message)}}

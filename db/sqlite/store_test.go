@@ -46,7 +46,7 @@ func seedMigrationHistory(t *testing.T, path string, versions ...int) {
 }
 
 func TestOpenRejectsMigrationHoleAndFuture(t *testing.T) {
-	for name, versions := range map[string][]int{"hole": {1, 3}, "future": {1, 2, 3, 4, 5, 6}} {
+	for name, versions := range map[string][]int{"hole": {1, 3}, "future": {1, 2, 3, 4, 5, 6, 7}} {
 		t.Run(name, func(t *testing.T) {
 			p := filepath.Join(t.TempDir(), "db.sqlite")
 			seedMigrationHistory(t, p, versions...)
@@ -92,6 +92,13 @@ func TestOpenUpgradesExistingSchema(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = db.Exec(`INSERT INTO settings(key,value,secret,updated_at) VALUES
+		('theme','dark',0,?),
+		('hf_token','must-be-removed',0,?),
+		('legacy_secret','must-be-removed',1,?)`, now, now, now); err != nil {
+		t.Fatal(err)
+	}
 	if err = db.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -107,5 +114,9 @@ func TestOpenUpgradesExistingSchema(t *testing.T) {
 	var oldIndex int
 	if err = s.DB.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='api_keys_prefix_idx'`).Scan(&oldIndex); err != nil || oldIndex != 0 {
 		t.Fatalf("redundant index count=%d err=%v", oldIndex, err)
+	}
+	var settings, sensitive int
+	if err = s.DB.QueryRow(`SELECT COUNT(*), COUNT(*) FILTER (WHERE secret=1 OR lower(key) LIKE '%token%' OR lower(key) LIKE '%secret%') FROM settings`).Scan(&settings, &sensitive); err != nil || settings != 1 || sensitive != 0 {
+		t.Fatalf("settings=%d sensitive=%d err=%v", settings, sensitive, err)
 	}
 }

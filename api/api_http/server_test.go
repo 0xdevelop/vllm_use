@@ -197,16 +197,24 @@ func TestMajorAdminRoutesAndJSONContract(t *testing.T) {
 	}
 }
 
-func TestSettingsSecretRedaction(t *testing.T) {
+func TestSettingsRejectSensitiveValues(t *testing.T) {
 	s, _ := testServer(t)
 	h := s.Handler()
-	w := request(t, h, http.MethodPut, "/api/settings", "admin", `[{"key":"plain","value":"visible","secret":false,"updated_at":"0001-01-01T00:00:00Z"},{"key":"secret","value":"never-return-this","secret":true,"updated_at":"0001-01-01T00:00:00Z"}]`)
+	w := request(t, h, http.MethodPut, "/api/settings", "admin", `[{"key":"plain","value":"visible"}]`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("put settings: %d %s", w.Code, w.Body.String())
 	}
+	w = request(t, h, http.MethodPut, "/api/settings", "admin", `[{"key":"theme2","value":"x","secret":true}]`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid JSON") {
+		t.Fatalf("legacy secret marker accepted: %d %s", w.Code, w.Body.String())
+	}
+	w = request(t, h, http.MethodPut, "/api/settings", "admin", `[{"key":"hf_token","value":"never-persist-this"}]`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "environment variables or CLI flags") {
+		t.Fatalf("sensitive setting accepted: %d %s", w.Code, w.Body.String())
+	}
 	w = request(t, h, http.MethodGet, "/api/settings", "admin", "")
-	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "never-return-this") || !strings.Contains(w.Body.String(), `"key":"secret","secret":true`) {
-		t.Fatalf("settings redaction: %d %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "never-persist-this") || !strings.Contains(w.Body.String(), `"key":"plain"`) {
+		t.Fatalf("settings response: %d %s", w.Code, w.Body.String())
 	}
 }
 
