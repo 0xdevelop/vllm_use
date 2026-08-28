@@ -101,6 +101,13 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 	downloads.SetRoot(c.ModelsDir)
 	downloads.SetHFHome(c.HFHome)
 	registry := ability_model.New(st, c.ModelsDir)
+	switcher.SetModelResolver(func(ctx context.Context, id string) (ability_runtime.ModelTarget, error) {
+		model, resolveErr := registry.Get(ctx, id)
+		if resolveErr != nil {
+			return ability_runtime.ModelTarget{}, resolveErr
+		}
+		return ability_runtime.ModelTarget{ID: model.ID, LocalPath: model.LocalPath, Status: model.Status}, nil
+	})
 	gpuService := ability_gpu.New(nil)
 	ability_model.Setup(registry)
 	ability_gpu.Setup(gpuService)

@@ -160,3 +160,51 @@ func TestUnexpectedLeaderExitCleansChildProcess(t *testing.T) {
 	}
 	eventually(t, func() bool { return syscall.Kill(pid, 0) == syscall.ESRCH })
 }
+
+func TestSwitchResolvesModelIDToReadyManagedPath(t *testing.T) {
+	argsFile := filepath.Join(t.TempDir(), "args.txt")
+	s := NewSupervisor(script(t, `printf '%s\n' "$@" > "`+argsFile+`"; trap 'exit 0' TERM; while :; do sleep 1; done`), time.Second, time.Second)
+	o := readyOptions(t, s)
+	o.Model = ""
+	modelPath := filepath.Join(t.TempDir(), "managed-model")
+	x := NewSwitchService(s)
+	x.SetModelResolver(func(_ context.Context, id string) (ModelTarget, error) {
+		return ModelTarget{ID: id, LocalPath: modelPath, Status: "ready"}, nil
+	})
+	if err := x.Switch(context.Background(), "model-1", o, ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = x.Stop(context.Background()) })
+	eventually(t, func() bool {
+		got, err := os.ReadFile(argsFile)
+		return err == nil && strings.Contains(string(got), "serve\n"+modelPath+"\n")
+	})
+	if got := x.Active(); got != "model-1" {
+		t.Fatalf("active model = %q", got)
+	}
+}
+
+func TestSwitchRejectsUnreadyOrMismatchedModelBeforeStarting(t *testing.T) {
+	s := NewSupervisor(script(t, "exit 99"), time.Second, time.Second)
+	x := NewSwitchService(s)
+	x.SetModelResolver(func(_ context.Context, id string) (ModelTarget, error) {
+		return ModelTarget{ID: id, LocalPath: filepath.Join(t.TempDir(), "model"), Status: "downloading"}, nil
+	})
+	if err := x.Switch(context.Background(), "model-1", Options{Port: 8000}, ""); err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("unready model error = %v", err)
+	}
+	if s.State().Status != Stopped {
+		t.Fatalf("unready model started runtime: %#v", s.State())
+	}
+
+	readyPath := filepath.Join(t.TempDir(), "ready")
+	x.SetModelResolver(func(_ context.Context, id string) (ModelTarget, error) {
+		return ModelTarget{ID: id, LocalPath: readyPath, Status: "ready"}, nil
+	})
+	if err := x.Switch(context.Background(), "model-1", Options{Model: "/different", Port: 8000}, ""); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("mismatched model error = %v", err)
+	}
+	if s.State().Status != Stopped {
+		t.Fatalf("mismatched model started runtime: %#v", s.State())
+	}
+}

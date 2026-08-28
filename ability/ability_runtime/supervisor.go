@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -285,23 +286,57 @@ func (s *Supervisor) State() State {
 }
 
 type SwitchService struct {
-	mu     sync.Mutex
-	s      *Supervisor
-	active string
+	mu       sync.Mutex
+	s        *Supervisor
+	resolver ModelResolver
+	active   string
 }
 
 func NewSwitchService(s *Supervisor) *SwitchService { return &SwitchService{s: s} }
+
+type ModelTarget struct {
+	ID        string
+	LocalPath string
+	Status    string
+}
+
+type ModelResolver func(context.Context, string) (ModelTarget, error)
+
+func (x *SwitchService) SetModelResolver(resolve ModelResolver) {
+	x.mu.Lock()
+	x.resolver = resolve
+	x.mu.Unlock()
+}
+
 func (x *SwitchService) Switch(ctx context.Context, id string, o Options, h string) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
+	if x.resolver == nil {
+		return errors.New("runtime model resolver unavailable")
+	}
+	target, err := x.resolver(ctx, id)
+	if err != nil {
+		return err
+	}
+	if target.ID != id {
+		return errors.New("runtime model resolver returned a mismatched model")
+	}
+	if target.Status != "ready" || target.LocalPath == "" || !filepath.IsAbs(target.LocalPath) {
+		return errors.New("model is not ready for runtime")
+	}
+	canonical := filepath.Clean(target.LocalPath)
+	if o.Model != "" && filepath.Clean(o.Model) != canonical {
+		return errors.New("runtime options model does not match model_id")
+	}
+	o.Model = canonical
 	if x.active != "" {
-		if e := x.s.Stop(ctx); e != nil {
-			return e
+		if err = x.s.Stop(ctx); err != nil {
+			return err
 		}
 		x.active = ""
 	}
-	if e := x.s.Start(ctx, o, h); e != nil {
-		return e
+	if err = x.s.Start(ctx, o, h); err != nil {
+		return err
 	}
 	x.active = id
 	return nil

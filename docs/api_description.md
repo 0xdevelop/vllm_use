@@ -33,7 +33,7 @@ MCP 还要求 `Mcp-Protocol-Version: 2026-07-28`，并使用 Go 标准库跨源�
 
 - `ability_model`：扫描、登记、查询和删除模型。
 - `ability_download`：通过宿主机 Hugging Face CLI 下载、重试、取消、查询日志。
-- `ability_runtime`：构造受约束参数，监督唯一宿主机 vLLM 进程并切换活动模型。
+- `ability_runtime`：构造受约束参数，监督唯一宿主机 vLLM 进程并切换活动模型。`runtime.switch` 以 SQLite 中的 `model_id` 为权威，只允许切换到状态为 `ready` 且具有受管本地路径的模型；调用方不能用 `options.model` 绕过模型登记状态。
 - `ability_gpu`：读取真实 `nvidia-smi` 状态。
 - `ability_api_key`：创建、列出、启停和删除带 scope 的 API key。
 - `ability_settings`：保存非敏感设置与读取最近 Gateway 请求元数据。token、password、credential、API key 等敏感键会被拒绝；凭据只能来自环境变量或 CLI flags，升级时会清理旧版 SQLite 中的敏感设置行。
