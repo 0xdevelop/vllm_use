@@ -22,6 +22,16 @@ func TestSettingsRuntimeConfigAndRequestsCRUD(t *testing.T) {
 	if err != nil || len(settings) != 1 || settings[0].Key != "theme" || settings[0].Value != "dark" {
 		t.Fatalf("settings=%v err=%v", settings, err)
 	}
+	if err = s.DeleteSetting(ctx, " theme "); err != nil {
+		t.Fatalf("delete setting: %v", err)
+	}
+	settings, err = s.Settings(ctx)
+	if err != nil || len(settings) != 0 {
+		t.Fatalf("settings after delete=%v err=%v", settings, err)
+	}
+	if err = s.DeleteSetting(ctx, "theme"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("delete missing setting: %v", err)
+	}
 	for _, sensitive := range []Setting{
 		{Key: "hf_token", Value: "secret"},
 		{Key: "upstream_api_key", Value: "secret"},

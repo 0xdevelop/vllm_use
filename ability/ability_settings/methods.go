@@ -11,6 +11,7 @@ import (
 const (
 	MethodList           = "settings.list"
 	MethodUpdate         = "settings.update"
+	MethodDelete         = "settings.delete"
 	MethodRecentRequests = "requests.recent"
 )
 
@@ -35,6 +36,16 @@ func LoadAPIMethods() {
 		}
 		err := store().PutSettings(ctx, in.Settings)
 		return map[string]bool{"updated": err == nil}, err
+	})
+	add(MethodDelete, "删除非敏感设置", map[string]interface{}{"key": map[string]interface{}{"type": "string", "minLength": 1, "maxLength": 128}}, []string{"key"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+		var in struct {
+			Key string `json:"key"`
+		}
+		if err := api_supported_methods.DecodeArguments(input, &in); err != nil {
+			return nil, err
+		}
+		err := store().DeleteSetting(ctx, in.Key)
+		return map[string]bool{"deleted": err == nil}, err
 	})
 	add(MethodRecentRequests, "读取最近请求", map[string]interface{}{"limit": map[string]interface{}{"type": "integer", "minimum": 1, "maximum": 500}}, nil, func(ctx context.Context, input interface{}) (interface{}, error) {
 		var in struct {

@@ -216,6 +216,14 @@ func TestSettingsRejectSensitiveValues(t *testing.T) {
 	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "never-persist-this") || !strings.Contains(w.Body.String(), `"key":"plain"`) {
 		t.Fatalf("settings response: %d %s", w.Code, w.Body.String())
 	}
+	w = request(t, h, http.MethodDelete, "/api/settings/plain", "admin", "")
+	if w.Code != http.StatusOK || decodeObject(t, w)["deleted"] != true {
+		t.Fatalf("delete setting: %d %s", w.Code, w.Body.String())
+	}
+	w = request(t, h, http.MethodGet, "/api/settings", "admin", "")
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), `"key":"plain"`) {
+		t.Fatalf("deleted setting remains: %d %s", w.Code, w.Body.String())
+	}
 }
 
 func jsonString(v string) string {

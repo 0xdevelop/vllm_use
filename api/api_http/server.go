@@ -208,6 +208,8 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		execute(w, r, ability_settings.MethodUpdate, map[string]interface{}{"settings": in})
+	case r.Method == "DELETE" && strings.HasPrefix(p, "/api/settings/"):
+		execute(w, r, ability_settings.MethodDelete, map[string]interface{}{"key": strings.TrimPrefix(p, "/api/settings/")})
 	case r.Method == "GET" && p == "/api/requests/recent":
 		n, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		execute(w, r, ability_settings.MethodRecentRequests, map[string]interface{}{"limit": n})

@@ -80,6 +80,28 @@ func (s *Store) PutSettings(ctx context.Context, values []Setting) error {
 	return tx.Commit()
 }
 
+func (s *Store) DeleteSetting(ctx context.Context, key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("setting key required")
+	}
+	if len(key) > 128 {
+		return errors.New("setting key exceeds 128 bytes")
+	}
+	result, err := s.DB.ExecContext(ctx, `DELETE FROM settings WHERE key=?`, key)
+	if err != nil {
+		return fmt.Errorf("delete setting %q: %w", key, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("delete setting %q: %w", key, err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 type RuntimeConfig struct {
 	ID                   string          `json:"id"`
 	Name                 string          `json:"name"`

@@ -1,4 +1,4 @@
-> 本文件由 `gen_api_docs.sh` 从方法注册表生成（v0.0.1，共 30 个方法），禁止手改；新增方法后重新执行生成。
+> 本文件由 `gen_api_docs.sh` 从方法注册表生成（v0.0.1，共 31 个方法），禁止手改；新增方法后重新执行生成。
 
 # 1. 统一调用方式
 
@@ -743,6 +743,37 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
   },
   "required": [
     "settings"
+  ],
+  "type": "object"
+}
+```
+
+## 9.3. settings.delete
+
+删除非敏感设置
+
+`arguments` 传参举例（仅含必填字段）：
+
+```json
+{
+  "key": "<key>"
+}
+```
+
+`arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
+
+```json
+{
+  "additionalProperties": false,
+  "properties": {
+    "key": {
+      "maxLength": 128,
+      "minLength": 1,
+      "type": "string"
+    }
+  },
+  "required": [
+    "key"
   ],
   "type": "object"
 }
