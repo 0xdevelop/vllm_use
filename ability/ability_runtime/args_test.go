@@ -42,13 +42,19 @@ func TestBuildArgsValidationAndReservedFlags(t *testing.T) {
 		{Model: "m", Port: 1, GPUMemoryUtilization: 1.01},
 		{Model: "m", Port: 1, MaxModelLen: -1},
 		{Model: "m", Port: 1, DType: "--bad"},
+		{Model: "m", Port: 1, ServedModelName: "--port"},
+		{Model: "m", Port: 1, ServedModelName: "bad\nname"},
+		{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: "---port", Values: []string{"2"}}}},
+		{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: "max.num.seqs", Values: []string{"2"}}}},
+		{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: "max-num-seqs", Values: []string{"--port", "2"}}}},
+		{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: "chat-template", Values: []string{"bad\x00value"}}}},
 	}
 	for _, options := range invalid {
 		if _, err := BuildArgs(options); err == nil {
 			t.Fatalf("accepted %#v", options)
 		}
 	}
-	for _, name := range []string{"pipeline-parallel-size", "gpu-memory-utilization", "max-model-len", "dtype", "quantization", "trust-remote-code", "tool-call-parser", "reasoning-parser", "enable-auto-tool-choice"} {
+	for _, name := range []string{"model", "host", "port", "tensor-parallel-size", "pipeline-parallel-size", "gpu-memory-utilization", "max-model-len", "dtype", "quantization", "trust-remote-code", "tool-call-parser", "reasoning-parser", "enable-auto-tool-choice", "served-model-name"} {
 		if _, err := BuildArgs(Options{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: name}}}); err == nil {
 			t.Fatalf("reserved flag %q accepted", name)
 		}

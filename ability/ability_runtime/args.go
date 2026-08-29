@@ -91,16 +91,44 @@ func BuildArgs(o Options) ([]string, error) {
 		a = append(a, "--enable-auto-tool-choice")
 	}
 	if o.ServedModelName != "" {
+		if err := validateArgumentValue("served model name", o.ServedModelName); err != nil {
+			return nil, err
+		}
 		a = append(a, "--served-model-name", o.ServedModelName)
 	}
 	reserved := map[string]bool{"model": true, "host": true, "port": true, "tensor-parallel-size": true, "pipeline-parallel-size": true, "gpu-memory-utilization": true, "max-model-len": true, "dtype": true, "quantization": true, "trust-remote-code": true, "tool-call-parser": true, "reasoning-parser": true, "enable-auto-tool-choice": true, "served-model-name": true}
 	for _, x := range o.ExtraArgs {
 		n := strings.TrimPrefix(x.Name, "--")
-		if n == "" || strings.ContainsAny(n, " =\t\r\n") || reserved[n] {
+		if !validExtraArgumentName(n) || reserved[n] {
 			return nil, errors.New("invalid or reserved extra argument: " + x.Name)
+		}
+		for _, value := range x.Values {
+			if err := validateArgumentValue("extra argument value", value); err != nil {
+				return nil, err
+			}
 		}
 		a = append(a, "--"+n)
 		a = append(a, x.Values...)
 	}
 	return a, nil
+}
+
+func validExtraArgumentName(name string) bool {
+	if name == "" || strings.HasPrefix(name, "-") {
+		return false
+	}
+	for i, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (i > 0 && r >= '0' && r <= '9') || (i > 0 && (r == '-' || r == '_')) {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func validateArgumentValue(name, value string) error {
+	if strings.HasPrefix(value, "--") || strings.ContainsAny(value, "\x00\n\r") {
+		return errors.New("invalid " + name)
+	}
+	return nil
 }
