@@ -142,6 +142,7 @@ func (s *Store) SetActiveRuntime(ctx context.Context, id string) error {
 }
 
 type APIRequest struct {
+	AuditID    string    `json:"audit_id"`
 	RequestID  string    `json:"request_id"`
 	Method     string    `json:"method"`
 	Path       string    `json:"path"`
@@ -166,7 +167,7 @@ func (s *Store) RecentRequests(ctx context.Context, limit int) ([]APIRequest, er
 	if limit < 1 || limit > 500 {
 		limit = 50
 	}
-	rows, e := s.DB.QueryContext(ctx, `SELECT request_id,method,path,model,status_code,duration_ms,COALESCE(key_id,''),remote_addr,created_at FROM api_requests ORDER BY created_at DESC LIMIT ?`, limit)
+	rows, e := s.DB.QueryContext(ctx, `SELECT id,request_id,method,path,model,status_code,duration_ms,COALESCE(key_id,''),remote_addr,created_at FROM api_requests ORDER BY created_at DESC,id DESC LIMIT ?`, limit)
 	if e != nil {
 		return nil, e
 	}
@@ -175,7 +176,7 @@ func (s *Store) RecentRequests(ctx context.Context, limit int) ([]APIRequest, er
 	for rows.Next() {
 		var v APIRequest
 		var ts string
-		if e = rows.Scan(&v.RequestID, &v.Method, &v.Path, &v.Model, &v.StatusCode, &v.DurationMS, &v.KeyID, &v.RemoteAddr, &ts); e != nil {
+		if e = rows.Scan(&v.AuditID, &v.RequestID, &v.Method, &v.Path, &v.Model, &v.StatusCode, &v.DurationMS, &v.KeyID, &v.RemoteAddr, &ts); e != nil {
 			return nil, e
 		}
 		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, ts)

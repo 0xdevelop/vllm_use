@@ -57,4 +57,7 @@ func TestSettingsRuntimeConfigAndRequestsCRUD(t *testing.T) {
 	if err != nil || len(recent) != 2 || recent[0].RequestID != "req-1" || recent[1].RequestID != "req-1" {
 		t.Fatalf("recent=%v err=%v", recent, err)
 	}
+	if recent[0].AuditID == "" || recent[1].AuditID == "" || recent[0].AuditID == recent[1].AuditID {
+		t.Fatalf("duplicate correlation IDs need distinct audit identities: %+v", recent)
+	}
 }
