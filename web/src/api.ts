@@ -1,9 +1,10 @@
 export type Model={id:string;name:string;kind:'huggingface'|'local';source:string;repository:string;revision:string;local_path:string;status:string;size_bytes:number;created_at:string;updated_at:string}
 export type RuntimeStatus='stopped'|'starting'|'running'|'stopping'|'failed'
-export type Runtime={status:RuntimeStatus;pid:number;started_at?:string;ready_at?:string;stopped_at?:string;exit_error?:string;exit_code?:number;logs:string[]}
+export type Runtime={status:RuntimeStatus;pid:number;active_model_id?:string;started_at?:string;ready_at?:string;stopped_at?:string;exit_error?:string;exit_code?:number;logs:string[]}
 export type RuntimeOptions={model:string;host:string;port:number;tensor_parallel:number;pipeline_parallel_size:number;gpu_devices:number[];gpu_memory_utilization:number;max_model_len:number;dtype:string;quantization:string;trust_remote_code:boolean;tool_call_parser:string;reasoning_parser:string;enable_auto_tool_choice:boolean;served_model_name:string;extra_args:{name:string;values:string[]}[]}
 export type GPU={index:number;name:string;uuid:string;memory_total_mib:number;memory_used_mib:number}
 export type DownloadTask={id:string;model_id?:string;repository:string;revision?:string;destination:string;state:'pending'|'running'|'succeeded'|'failed'|'canceled';progress:number;logs:string[];error?:string;started_at?:string;finished_at?:string}
+export type DownloadRequest={id:string;model_id:string;repository:string;revision?:string;destination:string;token?:string}
 export type Scope='inference'|'admin.read'|'admin.write'|'mcp.read'|'mcp.runtime'|'mcp.models'|'mcp.admin'
 export type APIKey={id:string;name:string;prefix:string;enabled:boolean;scopes:Scope[];created_at:string;last_used_at?:string}
 export type RequestMetadata={request_id:string;method:string;path:string;model:string;key_id:string;remote_addr:string;status_code:number;duration_ms:number;created_at:string}
@@ -21,3 +22,4 @@ export async function api<T>(path:string,init?:RequestInit):Promise<T>{
  return body as T
 }
 export const json=(value:unknown)=>JSON.stringify(value)
+export function linkedDownload(model:Model,id:string,destination:string,token:string):DownloadRequest{return{id,model_id:model.id,repository:model.repository,destination,...(model.revision?{revision:model.revision}:{}),...(token?{token}:{})}}

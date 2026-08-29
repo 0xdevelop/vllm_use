@@ -31,14 +31,15 @@ const (
 )
 
 type State struct {
-	Status    Status     `json:"status"`
-	PID       int        `json:"pid"`
-	StartedAt *time.Time `json:"started_at,omitempty"`
-	ReadyAt   *time.Time `json:"ready_at,omitempty"`
-	StoppedAt *time.Time `json:"stopped_at,omitempty"`
-	ExitError string     `json:"exit_error,omitempty"`
-	ExitCode  *int       `json:"exit_code,omitempty"`
-	Logs      []string   `json:"logs"`
+	Status        Status     `json:"status"`
+	PID           int        `json:"pid"`
+	ActiveModelID string     `json:"active_model_id,omitempty"`
+	StartedAt     *time.Time `json:"started_at,omitempty"`
+	ReadyAt       *time.Time `json:"ready_at,omitempty"`
+	StoppedAt     *time.Time `json:"stopped_at,omitempty"`
+	ExitError     string     `json:"exit_error,omitempty"`
+	ExitCode      *int       `json:"exit_code,omitempty"`
+	Logs          []string   `json:"logs"`
 }
 type Supervisor struct {
 	opMu                sync.Mutex

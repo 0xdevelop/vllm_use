@@ -182,6 +182,10 @@ func TestSwitchResolvesModelIDToReadyManagedPath(t *testing.T) {
 	if got := x.Active(); got != "model-1" {
 		t.Fatalf("active model = %q", got)
 	}
+	Setup(s, x)
+	if got := runtimeState().ActiveModelID; got != "model-1" {
+		t.Fatalf("runtime API active model = %q", got)
+	}
 }
 
 func TestSwitchRejectsUnreadyOrMismatchedModelBeforeStarting(t *testing.T) {

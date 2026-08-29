@@ -23,7 +23,7 @@ func Setup(supervisor *Supervisor, switchService *SwitchService) {
 }
 
 func LoadAPIMethods() {
-	add(MethodStatus, "读取 vLLM Runtime 状态", nil, nil, func(context.Context, interface{}) (interface{}, error) { return supervisor().State(), nil })
+	add(MethodStatus, "读取 vLLM Runtime 状态", nil, nil, func(context.Context, interface{}) (interface{}, error) { return runtimeState(), nil })
 	start := func(restart bool) func(context.Context, interface{}) (interface{}, error) {
 		return func(ctx context.Context, input interface{}) (interface{}, error) {
 			var in struct {
@@ -39,7 +39,7 @@ func LoadAPIMethods() {
 			} else {
 				err = supervisor().Start(ctx, in.Options, in.HealthURL)
 			}
-			return supervisor().State(), err
+			return runtimeState(), err
 		}
 	}
 	props := map[string]interface{}{"options": map[string]interface{}{"type": "object"}, "health_url": str()}
@@ -61,7 +61,7 @@ func LoadAPIMethods() {
 			return nil, errors.New("model_id is required")
 		}
 		err := currentSwitch.Switch(ctx, in.ModelID, in.Options, in.HealthURL)
-		return supervisor().State(), err
+		return runtimeState(), err
 	})
 	add(MethodStop, "停止 vLLM Runtime", nil, nil, func(ctx context.Context, _ interface{}) (interface{}, error) {
 		err := supervisor().Stop(ctx)
@@ -74,6 +74,13 @@ func supervisor() *Supervisor {
 		panic(errors.New("runtime ability is not initialized"))
 	}
 	return currentSupervisor
+}
+func runtimeState() State {
+	state := supervisor().State()
+	if currentSwitch != nil {
+		state.ActiveModelID = currentSwitch.Active()
+	}
+	return state
 }
 func add(name, description string, properties map[string]interface{}, required []string, execute func(context.Context, interface{}) (interface{}, error)) {
 	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{Name: name, Description: description, Scope: "mcp.runtime", InputSchema: api_supported_methods.ObjectSchema(properties, required), Execute: execute})

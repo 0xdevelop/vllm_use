@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { APIError, api, tokenStore } from './api'
+import { APIError, api, linkedDownload, tokenStore } from './api'
 import type {DownloadTask,RuntimeOptions} from './api'
 
 describe('api contract', () => {
@@ -25,3 +25,5 @@ describe('api contract', () => {
 })
 
 describe('wire types',()=>{it('keeps runtime and linked-download fields snake_case',()=>{const options:RuntimeOptions={model:'m',host:'127.0.0.1',port:8000,tensor_parallel:2,pipeline_parallel_size:3,gpu_devices:[0,1],gpu_memory_utilization:.9,max_model_len:4096,dtype:'auto',quantization:'awq',trust_remote_code:true,tool_call_parser:'hermes',reasoning_parser:'deepseek_r1',enable_auto_tool_choice:true,served_model_name:'served',extra_args:[{name:'max-num-seqs',values:['8']}]};const job:DownloadTask={id:'job',model_id:'model',repository:'org/model',revision:'main',destination:'/models/model',state:'running',progress:0,logs:[]};expect(JSON.parse(JSON.stringify({options,job}))).toMatchObject({options:{pipeline_parallel_size:3,gpu_devices:[0,1],enable_auto_tool_choice:true},job:{model_id:'model',revision:'main'}})})})
+
+describe('model workflow',()=>{it('binds a download to its registered Hugging Face model',()=>{const model={id:'model-id',name:'model',kind:'huggingface' as const,source:'org/model',repository:'org/model',revision:'main',local_path:'',status:'registered',size_bytes:0,created_at:'',updated_at:''};expect(linkedDownload(model,'job-id','/models/org--model','')).toEqual({id:'job-id',model_id:'model-id',repository:'org/model',revision:'main',destination:'/models/org--model'})})})
