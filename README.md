@@ -1,5 +1,7 @@
 # vllm-use
 
+[![Quality](https://github.com/0xdevelop/vllm_use/actions/workflows/quality.yml/badge.svg)](https://github.com/0xdevelop/vllm_use/actions/workflows/quality.yml)
+
 vllm-use 是一个可自托管、宿主机原生的 vLLM 管理与推理服务。它用一个 Go 二进制提供 React Web Admin、SQLite 状态、vLLM 单进程监督、模型下载、GPU 观测、API key 管理、OpenAI/Anthropic 兼容 Gateway 与 MCP 管理接口。
 
 ## 运行
