@@ -185,12 +185,17 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			var obj map[string]any
-			if json.Unmarshal(body, &obj) == nil {
-				if m, ok := obj["model"].(string); ok {
-					meta.Model = m
-					if actual, exists := g.aliases[m]; exists {
-						obj["model"] = actual
-						body, _ = json.Marshal(obj)
+			decoder := json.NewDecoder(bytes.NewReader(body))
+			decoder.UseNumber()
+			if decoder.Decode(&obj) == nil {
+				var trailing any
+				if decoder.Decode(&trailing) == io.EOF {
+					if m, ok := obj["model"].(string); ok {
+						meta.Model = m
+						if actual, exists := g.aliases[m]; exists {
+							obj["model"] = actual
+							body, _ = json.Marshal(obj)
+						}
 					}
 				}
 			}

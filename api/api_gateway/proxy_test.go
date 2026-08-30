@@ -153,6 +153,33 @@ func TestOversizeJSONRejectedWithoutForwarding(t *testing.T) {
 	}
 }
 
+func TestAliasRewritePreservesJSONNumbers(t *testing.T) {
+	u, _ := url.Parse("http://127.0.0.1:8000")
+	g := NewWithOptions(u, VerifyFunc(func(context.Context, string, string) (Principal, error) {
+		return Principal{}, nil
+	}), Options{Aliases: map[string]string{"friendly": "actual"}})
+	forwarded := ""
+	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		forwarded = string(body)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"friendly","seed":9007199254740993,"nested":{"id":18446744073709551615}}`))
+	req.Header.Set("Authorization", "Bearer ok")
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(forwarded, `"model":"actual"`) || !strings.Contains(forwarded, `"seed":9007199254740993`) || !strings.Contains(forwarded, `"id":18446744073709551615`) {
+		t.Fatalf("alias rewrite changed numeric values: %s", forwarded)
+	}
+}
+
 func TestStatusWriterKeepsFirstStatus(t *testing.T) {
 	w := httptest.NewRecorder()
 	s := &statusWriter{ResponseWriter: w, status: http.StatusOK}
