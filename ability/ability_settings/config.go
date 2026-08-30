@@ -27,13 +27,69 @@ type Config struct {
 func Default() Config {
 	d, _ := os.UserConfigDir()
 	d = filepath.Join(d, "vllm-use")
-	workers := 2
-	if raw := os.Getenv("VLLM_USE_MAX_DOWNLOAD_WORKERS"); raw != "" {
-		if value, err := strconv.Atoi(raw); err == nil {
-			workers = value
+	d = envOr("VLLM_USE_DATA_DIR", d)
+	database := firstEnv("VLLM_USE_DATABASE", "VLLM_USE_DB")
+	if database == "" {
+		database = filepath.Join(d, "vllm-use.db")
+	}
+	models := envOr("VLLM_USE_MODELS_DIR", filepath.Join(d, "models"))
+	return Config{
+		Listen:             envOr("VLLM_USE_LISTEN", "127.0.0.1:8080"),
+		DataDir:            d,
+		Database:           database,
+		ModelsDir:          models,
+		VLLMBinary:         envOr("VLLM_USE_VLLM_BINARY", "vllm"),
+		HFCLI:              envOr("VLLM_USE_HF_CLI", "hf"),
+		HFHome:             os.Getenv("VLLM_USE_HF_HOME"),
+		Upstream:           envOr("VLLM_USE_UPSTREAM", "http://127.0.0.1:8000"),
+		AdminToken:         os.Getenv("VLLM_USE_ADMIN_TOKEN"),
+		UpstreamAPIKey:     os.Getenv("VLLM_USE_UPSTREAM_API_KEY"),
+		MCPAllowedOrigins:  splitList(os.Getenv("VLLM_USE_MCP_ALLOWED_ORIGINS")),
+		ReadinessTimeout:   envDuration("VLLM_USE_READINESS_TIMEOUT", 2*time.Minute, 0),
+		ShutdownGrace:      envDuration("VLLM_USE_SHUTDOWN_GRACE", 10*time.Second, 0),
+		HealthInterval:     envDuration("VLLM_USE_HEALTH_INTERVAL", 200*time.Millisecond, -1),
+		MaxDownloadWorkers: envInt("VLLM_USE_MAX_DOWNLOAD_WORKERS", 2),
+	}
+}
+
+func envOr(key, fallback string) string {
+	if value, ok := os.LookupEnv(key); ok && value != "" {
+		return value
+	}
+	return fallback
+}
+
+func firstEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := os.Getenv(key); value != "" {
+			return value
 		}
 	}
-	return Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "vllm-use.db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", HFHome: os.Getenv("VLLM_USE_HF_HOME"), Upstream: "http://127.0.0.1:8000", AdminToken: os.Getenv("VLLM_USE_ADMIN_TOKEN"), UpstreamAPIKey: os.Getenv("VLLM_USE_UPSTREAM_API_KEY"), MCPAllowedOrigins: splitList(os.Getenv("VLLM_USE_MCP_ALLOWED_ORIGINS")), ReadinessTimeout: 2 * time.Minute, ShutdownGrace: 10 * time.Second, HealthInterval: 200 * time.Millisecond, MaxDownloadWorkers: workers}
+	return ""
+}
+
+func envInt(key string, fallback int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0 // rejected by Config.Validate
+	}
+	return value
+}
+
+func envDuration(key string, fallback, invalid time.Duration) time.Duration {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	value, err := time.ParseDuration(raw)
+	if err != nil {
+		return invalid // rejected by Config.Validate
+	}
+	return value
 }
 
 func splitList(s string) []string {

@@ -10,6 +10,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -42,17 +44,29 @@ func ParseConfig(args []string, stderr io.Writer) (ability_settings.Config, erro
 	flags.StringVar(&c.HFHome, "hf-home", c.HFHome, "Hugging Face cache/config directory (preserves inherited HF_HOME when unset)")
 	flags.IntVar(&c.MaxDownloadWorkers, "max-download-workers", c.MaxDownloadWorkers, "maximum concurrent Hugging Face downloads")
 	flags.StringVar(&c.Upstream, "upstream", c.Upstream, "vLLM upstream URL")
+	flags.StringVar(&c.UpstreamAPIKey, "upstream-api-key", c.UpstreamAPIKey, "vLLM upstream credential (prefer VLLM_USE_UPSTREAM_API_KEY to avoid process argv exposure)")
 	flags.StringVar(&c.AdminToken, "admin-token", c.AdminToken, "admin token (required for management API access)")
+	flags.DurationVar(&c.ReadinessTimeout, "readiness-timeout", c.ReadinessTimeout, "maximum time to wait for vLLM readiness")
+	flags.DurationVar(&c.ShutdownGrace, "shutdown-grace", c.ShutdownGrace, "grace period before force-stopping vLLM")
+	flags.DurationVar(&c.HealthInterval, "health-interval", c.HealthInterval, "vLLM readiness polling interval")
 	var mcpOrigins string
-	flags.StringVar(&mcpOrigins, "mcp-allowed-origins", "", "comma-separated additional trusted MCP origins")
+	flags.StringVar(&mcpOrigins, "mcp-allowed-origins", strings.Join(c.MCPAllowedOrigins, ","), "comma-separated additional trusted MCP origins")
 	if err := flags.Parse(args); err != nil {
 		return ability_settings.Config{}, err
 	}
 	if flags.NArg() != 0 {
 		return ability_settings.Config{}, fmt.Errorf("unexpected positional arguments: %s", strings.Join(flags.Args(), " "))
 	}
-	if mcpOrigins != "" {
-		c.MCPAllowedOrigins = splitList(mcpOrigins)
+	c.MCPAllowedOrigins = splitList(mcpOrigins)
+	visited := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { visited[f.Name] = true })
+	if visited["data-dir"] {
+		if !visited["db"] && os.Getenv("VLLM_USE_DATABASE") == "" && os.Getenv("VLLM_USE_DB") == "" {
+			c.Database = filepath.Join(c.DataDir, "vllm-use.db")
+		}
+		if !visited["models-dir"] && os.Getenv("VLLM_USE_MODELS_DIR") == "" {
+			c.ModelsDir = filepath.Join(c.DataDir, "models")
+		}
 	}
 	return c, nil
 }
