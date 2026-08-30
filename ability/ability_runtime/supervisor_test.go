@@ -212,3 +212,71 @@ func TestSwitchRejectsUnreadyOrMismatchedModelBeforeStarting(t *testing.T) {
 		t.Fatalf("mismatched model started runtime: %#v", s.State())
 	}
 }
+
+func TestRestartRejectsInvalidOptionsWithoutStoppingHealthyRuntime(t *testing.T) {
+	s := NewSupervisor(script(t, `trap 'exit 0' TERM; while :; do sleep 1; done`), time.Second, time.Second)
+	o := readyOptions(t, s)
+	if err := s.Start(context.Background(), o, ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Stop(context.Background()) })
+	pid := s.State().PID
+
+	invalid := o
+	invalid.Model = ""
+	if err := s.Restart(context.Background(), invalid, ""); err == nil {
+		t.Fatal("invalid restart options accepted")
+	}
+	if state := s.State(); state.Status != Running || state.PID != pid {
+		t.Fatalf("invalid restart disrupted healthy runtime: %#v", state)
+	}
+}
+
+func TestSwitchStopsDirectlyStartedRuntimeAndReplacesItsAssociation(t *testing.T) {
+	s := NewSupervisor(script(t, `trap 'exit 0' TERM; while :; do sleep 1; done`), time.Second, time.Second)
+	o := readyOptions(t, s)
+	if err := s.Start(context.Background(), o, ""); err != nil {
+		t.Fatal(err)
+	}
+	originalPID := s.State().PID
+
+	modelPath := filepath.Join(t.TempDir(), "managed-model")
+	x := NewSwitchService(s)
+	x.SetModelResolver(func(_ context.Context, id string) (ModelTarget, error) {
+		return ModelTarget{ID: id, LocalPath: modelPath, Status: "ready"}, nil
+	})
+	if err := x.Switch(context.Background(), "model-2", Options{Host: "127.0.0.1", Port: 18000}, ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = x.Stop(context.Background()) })
+	if state := s.State(); state.Status != Running || state.PID == originalPID {
+		t.Fatalf("direct runtime was not replaced: %#v", state)
+	}
+	if got := x.Active(); got != "model-2" {
+		t.Fatalf("active model = %q", got)
+	}
+}
+
+func TestDirectRestartClearsRegisteredModelAssociation(t *testing.T) {
+	s := NewSupervisor(script(t, `trap 'exit 0' TERM; while :; do sleep 1; done`), time.Second, time.Second)
+	o := readyOptions(t, s)
+	o.Model = ""
+	modelPath := filepath.Join(t.TempDir(), "managed-model")
+	x := NewSwitchService(s)
+	x.SetModelResolver(func(_ context.Context, id string) (ModelTarget, error) {
+		return ModelTarget{ID: id, LocalPath: modelPath, Status: "ready"}, nil
+	})
+	if err := x.Switch(context.Background(), "model-1", o, ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = x.Stop(context.Background()) })
+
+	direct := o
+	direct.Model = modelPath
+	if err := x.Restart(context.Background(), direct, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := x.Active(); got != "" {
+		t.Fatalf("direct restart retained stale model association %q", got)
+	}
+}

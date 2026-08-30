@@ -260,6 +260,15 @@ func (s *Supervisor) stop(ctx context.Context) error {
 	}
 }
 func (s *Supervisor) Restart(ctx context.Context, o Options, h string) error {
+	// Validate the replacement before stopping a healthy runtime. Restart is a
+	// destructive operation once stop begins, so malformed options must fail
+	// without causing an avoidable outage.
+	if h != "" {
+		return errors.New("health_url is not accepted; readiness is derived from runtime options")
+	}
+	if _, err := BuildArgs(o); err != nil {
+		return err
+	}
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
 	if e := s.stop(ctx); e != nil {
@@ -330,18 +339,48 @@ func (x *SwitchService) Switch(ctx context.Context, id string, o Options, h stri
 		return errors.New("runtime options model does not match model_id")
 	}
 	o.Model = canonical
-	if x.active != "" {
+	status := x.s.State().Status
+	if status == Starting || status == Running || status == Stopping {
 		if err = x.s.Stop(ctx); err != nil {
 			return err
 		}
-		x.active = ""
 	}
+	x.active = ""
 	if err = x.s.Start(ctx, o, h); err != nil {
 		return err
 	}
 	x.active = id
 	return nil
 }
+
+// Start launches options that are not associated with a registry model. A
+// failed duplicate start preserves any existing association; a successful
+// direct start intentionally clears it.
+func (x *SwitchService) Start(ctx context.Context, o Options, h string) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	if err := x.s.Start(ctx, o, h); err != nil {
+		return err
+	}
+	x.active = ""
+	return nil
+}
+
+// Restart replaces the current runtime without claiming that the replacement
+// still serves the previously registered model. Supervisor.Restart validates
+// before stopping, so an invalid preflight keeps both the process and its
+// association intact.
+func (x *SwitchService) Restart(ctx context.Context, o Options, h string) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	err := x.s.Restart(ctx, o, h)
+	status := x.s.State().Status
+	if err == nil || (status != Starting && status != Running) {
+		x.active = ""
+	}
+	return err
+}
+
 func (x *SwitchService) Active() string {
 	x.mu.Lock()
 	defer x.mu.Unlock()

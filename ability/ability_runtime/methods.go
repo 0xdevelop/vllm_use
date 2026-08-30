@@ -34,7 +34,11 @@ func LoadAPIMethods() {
 				return nil, err
 			}
 			var err error
-			if restart {
+			if currentSwitch != nil && restart {
+				err = currentSwitch.Restart(ctx, in.Options, in.HealthURL)
+			} else if currentSwitch != nil {
+				err = currentSwitch.Start(ctx, in.Options, in.HealthURL)
+			} else if restart {
 				err = supervisor().Restart(ctx, in.Options, in.HealthURL)
 			} else {
 				err = supervisor().Start(ctx, in.Options, in.HealthURL)
@@ -64,7 +68,12 @@ func LoadAPIMethods() {
 		return runtimeState(), err
 	})
 	add(MethodStop, "停止 vLLM Runtime", nil, nil, func(ctx context.Context, _ interface{}) (interface{}, error) {
-		err := supervisor().Stop(ctx)
+		var err error
+		if currentSwitch != nil {
+			err = currentSwitch.Stop(ctx)
+		} else {
+			err = supervisor().Stop(ctx)
+		}
 		return map[string]bool{"stopped": err == nil}, err
 	})
 }
