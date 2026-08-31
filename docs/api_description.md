@@ -42,7 +42,7 @@ SQLite 是持久化真相源。下载进程和 vLLM runtime 由宿主机进程�
 
 ## 推理数据面
 
-`/v1/*` 是独立的推理 Gateway Adapter，校验 `inference` scope 后反向代理到配置的 vLLM upstream。它支持：
+`/v1/*` 是独立的推理 Gateway Adapter，校验 `inference` scope 后反向代理到配置的 vLLM upstream。upstream 配置只能是无凭据、无路径/查询/fragment 的 loopback HTTP(S) origin，确保数据面连接的是本机受管 vLLM，而不是被误配成任意远端代理。它支持：
 
 - OpenAI Chat Completions、Completions、Responses、Embeddings 和 Models 端点。
 - Anthropic Messages 与 token counting 兼容端点。

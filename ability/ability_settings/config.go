@@ -113,8 +113,16 @@ func (c Config) Validate() error {
 		return errors.New("vllm and hf executables are required")
 	}
 	u, err := url.Parse(c.Upstream)
-	if c.Upstream != "" && (err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https")) {
+	if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return errors.New("upstream must be an absolute HTTP(S) URL")
+	}
+	if u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return errors.New("upstream must be an origin URL without credentials, path, query, or fragment")
+	}
+	upstreamHost := u.Hostname()
+	upstreamIP := net.ParseIP(upstreamHost)
+	if !strings.EqualFold(upstreamHost, "localhost") && (upstreamIP == nil || !upstreamIP.IsLoopback()) {
+		return errors.New("upstream host must be loopback for the managed host vLLM process")
 	}
 	if c.ReadinessTimeout <= 0 || c.ShutdownGrace <= 0 || c.HealthInterval < 0 {
 		return errors.New("timeouts must be positive")

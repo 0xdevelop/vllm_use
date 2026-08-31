@@ -9,7 +9,7 @@ import (
 
 func TestValidationAndLoopback(t *testing.T) {
 	d := t.TempDir()
-	c := Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", ReadinessTimeout: time.Second, ShutdownGrace: time.Second, MaxDownloadWorkers: 1}
+	c := Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", Upstream: "http://127.0.0.1:8000", ReadinessTimeout: time.Second, ShutdownGrace: time.Second, MaxDownloadWorkers: 1}
 	if e := c.Validate(); e != nil {
 		t.Fatal(e)
 	}
@@ -32,6 +32,43 @@ func TestValidationAndLoopback(t *testing.T) {
 	c.ModelsDir = "relative"
 	if e := c.Validate(); e == nil {
 		t.Fatal("relative path accepted")
+	}
+}
+
+func TestValidationRestrictsManagedVLLMUpstreamToLoopbackRoot(t *testing.T) {
+	d := t.TempDir()
+	base := Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", ReadinessTimeout: time.Second, ShutdownGrace: time.Second, MaxDownloadWorkers: 1}
+	for _, upstream := range []string{
+		"http://127.0.0.1:8000",
+		"http://localhost:8000",
+		"http://LOCALHOST:8000",
+		"http://[::1]:8000",
+	} {
+		t.Run("accept_"+upstream, func(t *testing.T) {
+			c := base
+			c.Upstream = upstream
+			if err := c.Validate(); err != nil {
+				t.Fatalf("loopback upstream %q rejected: %v", upstream, err)
+			}
+		})
+	}
+	for _, upstream := range []string{
+		"",
+		"http://0.0.0.0:8000",
+		"http://192.0.2.10:8000",
+		"https://vllm.example:8000",
+		"http://user:password@127.0.0.1:8000",
+		"http://127.0.0.1:8000/base",
+		"http://127.0.0.1:8000?token=secret",
+		"http://127.0.0.1:8000#fragment",
+	} {
+		t.Run("reject_"+upstream, func(t *testing.T) {
+			c := base
+			c.Upstream = upstream
+			if err := c.Validate(); err == nil {
+				t.Fatalf("unsafe upstream %q accepted", upstream)
+			}
+		})
 	}
 }
 
