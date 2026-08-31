@@ -46,7 +46,7 @@ SQLite 是持久化真相源。下载进程和 vLLM runtime 由宿主机进程�
 
 - OpenAI Chat Completions、Completions、Responses、Embeddings 和 Models 端点。
 - Anthropic Messages 与 token counting 兼容端点。
-- SSE 流式透传、请求取消传播、模型 alias 重写（重写时保留大整数等 JSON 数值的原始精度）、可选上游凭据注入。
+- SSE 流式透传、请求取消传播、模型 alias 重写（重写时保留大整数等 JSON 数值的原始精度）、可选上游凭据注入。所有 POST 推理请求统一限制为 16 MiB，不能通过省略或伪装 `Content-Type` 绕过。
 - 只记录非敏感请求元数据，并以 API key ID（不含 secret）标记已认证请求，便于审计和撤销分析；每条记录有服务端生成的唯一 `audit_id`，客户端 `X-Request-ID` 仅作为可重复的关联字段，重复值不会覆盖、丢弃或混淆审计事件；客户端 Authorization/X-API-Key 不转发给 upstream；服务优雅退出时会在关闭 SQLite 前等待已接收的审计写入完成。
 
 Gateway 不执行业务管理 Ability，也不伪造推理结果。upstream 不可用时返回明确的 502。

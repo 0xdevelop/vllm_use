@@ -176,14 +176,22 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	meta.KeyID = principal.KeyID
-	if r.Body != nil && strings.Contains(r.Header.Get("Content-Type"), "application/json") {
-		body, e := io.ReadAll(io.LimitReader(r.Body, maxJSONBody+1))
-		if e == nil {
-			r.Body.Close()
-			if len(body) > maxJSONBody {
-				write(w, http.StatusRequestEntityTooLarge, "JSON body exceeds 16 MiB limit")
-				return
-			}
+	// Accepted POST endpoints use JSON request bodies when a body is present.
+	// Enforce the limit independently of Content-Type so a client cannot bypass
+	// it by omitting or spoofing that header. Buffering also lets alias rewriting
+	// preserve the original request if the payload is not a JSON object.
+	if r.Method == http.MethodPost && r.Body != nil {
+		body, readErr := io.ReadAll(io.LimitReader(r.Body, maxJSONBody+1))
+		_ = r.Body.Close()
+		if readErr != nil {
+			write(w, http.StatusBadRequest, "failed to read request body")
+			return
+		}
+		if len(body) > maxJSONBody {
+			write(w, http.StatusRequestEntityTooLarge, "request body exceeds 16 MiB limit")
+			return
+		}
+		if len(body) != 0 {
 			var obj map[string]any
 			decoder := json.NewDecoder(bytes.NewReader(body))
 			decoder.UseNumber()
@@ -199,9 +207,9 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			r.Body = io.NopCloser(bytes.NewReader(body))
-			r.ContentLength = int64(len(body))
 		}
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		r.ContentLength = int64(len(body))
 	}
 	g.proxy.ServeHTTP(w, r)
 }

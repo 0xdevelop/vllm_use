@@ -138,18 +138,67 @@ func TestResponsesSuffixAnthropicAliasAndRecording(t *testing.T) {
 	}
 }
 
-func TestOversizeJSONRejectedWithoutForwarding(t *testing.T) {
+func TestOversizeBodyRejectedWithoutForwardingRegardlessOfContentType(t *testing.T) {
+	u, _ := url.Parse("http://127.0.0.1:8000")
+	g := New(u, VerifyFunc(func(context.Context, string, string) (Principal, error) { return Principal{}, nil }))
+	for _, contentType := range []string{"application/json", "text/plain", ""} {
+		t.Run(contentType, func(t *testing.T) {
+			forwarded := false
+			g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) { forwarded = true; return nil, errors.New("unexpected") })
+			req := httptest.NewRequest(http.MethodPost, "/v1/completions", io.LimitReader(strings.NewReader(strings.Repeat("x", maxJSONBody+2)), maxJSONBody+1))
+			req.Header.Set("Authorization", "Bearer ok")
+			if contentType != "" {
+				req.Header.Set("Content-Type", contentType)
+			}
+			w := httptest.NewRecorder()
+			g.ServeHTTP(w, req)
+			if w.Code != http.StatusRequestEntityTooLarge || forwarded {
+				t.Fatalf("status=%d forwarded=%v", w.Code, forwarded)
+			}
+		})
+	}
+}
+
+func TestRequestBodyReadFailureRejectedWithoutForwarding(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:8000")
 	g := New(u, VerifyFunc(func(context.Context, string, string) (Principal, error) { return Principal{}, nil }))
 	forwarded := false
 	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) { forwarded = true; return nil, errors.New("unexpected") })
-	req := httptest.NewRequest(http.MethodPost, "/v1/completions", io.LimitReader(strings.NewReader(strings.Repeat("x", maxJSONBody+2)), maxJSONBody+1))
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+	req.Body = &failingBody{}
 	req.Header.Set("Authorization", "Bearer ok")
-	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	g.ServeHTTP(w, req)
-	if w.Code != http.StatusRequestEntityTooLarge || forwarded {
-		t.Fatalf("status=%d forwarded=%v", w.Code, forwarded)
+	if w.Code != http.StatusBadRequest || forwarded {
+		t.Fatalf("status=%d forwarded=%v body=%s", w.Code, forwarded, w.Body.String())
+	}
+}
+
+type failingBody struct{}
+
+func (*failingBody) Read([]byte) (int, error) { return 0, errors.New("broken request stream") }
+func (*failingBody) Close() error             { return nil }
+
+func TestAliasRewriteDoesNotTrustContentType(t *testing.T) {
+	u, _ := url.Parse("http://127.0.0.1:8000")
+	g := NewWithOptions(u, VerifyFunc(func(context.Context, string, string) (Principal, error) {
+		return Principal{}, nil
+	}), Options{Aliases: map[string]string{"friendly": "actual"}})
+	forwarded := ""
+	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		forwarded = string(body)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+	})
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"model":"friendly"}`))
+	req.Header.Set("Authorization", "Bearer ok")
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+	if w.Code != http.StatusOK || !strings.Contains(forwarded, `"model":"actual"`) {
+		t.Fatalf("status=%d forwarded=%s", w.Code, forwarded)
 	}
 }
 
