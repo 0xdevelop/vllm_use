@@ -245,17 +245,20 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 
 ## 6.2. downloads.start
 
-启动模型下载
+从已登记模型启动下载
 
 异步方法：受理后返回 `task_id`，进度与结果经任务查询方法读取。
 
 `arguments` 传参举例（仅含必填字段）：
 
 ```json
-{}
+{
+  "id": "<id>",
+  "model_id": "<model_id>"
+}
 ```
 
-可选字段：`destination`、`id`、`model_id`、`repository`、`revision`、`token`。
+可选字段：`token`。
 
 `arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
 
@@ -263,25 +266,20 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 {
   "additionalProperties": false,
   "properties": {
-    "destination": {
-      "type": "string"
-    },
     "id": {
       "type": "string"
     },
     "model_id": {
       "type": "string"
     },
-    "repository": {
-      "type": "string"
-    },
-    "revision": {
-      "type": "string"
-    },
     "token": {
       "type": "string"
     }
   },
+  "required": [
+    "id",
+    "model_id"
+  ],
   "type": "object"
 }
 ```

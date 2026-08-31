@@ -21,14 +21,20 @@ var currentDownloader *Downloader
 
 func Setup(downloader *Downloader) { currentDownloader = downloader }
 
+type StartRequest struct {
+	ID      string `json:"id"`
+	ModelID string `json:"model_id"`
+	Token   string `json:"token,omitempty"`
+}
+
 func LoadAPIMethods() {
 	add(MethodList, "列出下载任务", nil, nil, func(context.Context, interface{}) (interface{}, error) { return downloader().List(), nil })
-	add(MethodStart, "启动模型下载", requestProperties(), nil, func(ctx context.Context, input interface{}) (interface{}, error) {
-		var in Request
+	add(MethodStart, "从已登记模型启动下载", requestProperties(), []string{"id", "model_id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+		var in StartRequest
 		if err := api_supported_methods.DecodeArguments(input, &in); err != nil {
 			return nil, err
 		}
-		return downloader().DownloadRequest(ctx, in)
+		return downloader().DownloadModel(ctx, in.ID, in.ModelID, in.Token)
 	})
 	add(MethodStatus, "读取下载状态", map[string]interface{}{"id": str()}, []string{"id"}, func(_ context.Context, input interface{}) (interface{}, error) {
 		id, err := inputID(input)
@@ -69,7 +75,7 @@ func LoadAPIMethods() {
 }
 
 func requestProperties() map[string]interface{} {
-	return map[string]interface{}{"id": str(), "model_id": str(), "repository": str(), "destination": str(), "token": str(), "revision": str()}
+	return map[string]interface{}{"id": str(), "model_id": str(), "token": str()}
 }
 func inputID(input interface{}) (string, error) {
 	var in struct {

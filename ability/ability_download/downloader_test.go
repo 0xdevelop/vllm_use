@@ -219,6 +219,52 @@ func TestSuccessfulCommandWithoutModelFilesFailsLinkedDownload(t *testing.T) {
 	}
 }
 
+func TestDownloadModelDerivesAuthoritativeSourceAndDestination(t *testing.T) {
+	root := t.TempDir()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, row := range []struct {
+		id, kind, repository, revision, status string
+	}{
+		{"hf-model", "huggingface", "org/from-db", "v2", "registered"},
+		{"local-model", "local", "", "", "ready"},
+		{"ready-model", "huggingface", "org/ready", "", "ready"},
+	} {
+		_, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, row.id, row.kind, row.repository, nil, now, row.id, row.repository, row.revision, 0, row.status, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+	d.SetRoot(root)
+	d.SetStore(st)
+	job, err := d.DownloadModel(context.Background(), "job", "hf-model", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Repo != "org/from-db" || job.Revision != "v2" || job.Destination != filepath.Join(root, "hf-model") {
+		t.Fatalf("derived job = %#v", job)
+	}
+	for _, tc := range []struct {
+		name, modelID, contains string
+	}{
+		{"missing", "missing", "not found"},
+		{"local", "local-model", "Hugging Face"},
+		{"ready", "ready-model", "already ready"},
+		{"path injection", "../escape", "invalid model id"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, gotErr := d.DownloadModel(context.Background(), "other-"+tc.name, tc.modelID, ""); gotErr == nil || !strings.Contains(gotErr.Error(), tc.contains) {
+				t.Fatalf("DownloadModel(%q) error = %v", tc.modelID, gotErr)
+			}
+		})
+	}
+}
+
 func waitForState(t *testing.T, d *Downloader, id string, want State) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

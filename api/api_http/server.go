@@ -160,7 +160,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "GET" && p == "/api/downloads":
 		execute(w, r, ability_download.MethodList, map[string]interface{}{})
 	case r.Method == "POST" && p == "/api/downloads":
-		var in ability_download.Request
+		var in ability_download.StartRequest
 		if !decode(w, r, &in) {
 			return
 		}

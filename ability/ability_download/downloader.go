@@ -115,6 +115,44 @@ func (d *Downloader) Download(parent context.Context, id, repo, dest, token stri
 	return d.DownloadRequest(parent, Request{ID: id, Repository: repo, Destination: dest, Token: token})
 }
 
+// DownloadModel starts a management-plane download from the registered model
+// record. Repository, revision and destination are deliberately not accepted
+// from the caller: SQLite and the configured models root are authoritative.
+func (d *Downloader) DownloadModel(parent context.Context, id, modelID, token string) (*Job, error) {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" || len(modelID) > 128 || strings.ContainsAny(modelID, "\\/\x00\n\r	") {
+		return nil, errors.New("invalid model id")
+	}
+	d.mu.RLock()
+	root, st := d.root, d.store
+	d.mu.RUnlock()
+	if st == nil || root == "" {
+		return nil, errors.New("model integration unavailable")
+	}
+	var kind, repository, revision, status string
+	if err := st.DB.QueryRowContext(parent, `SELECT kind,repository,revision,status FROM models WHERE id=?`, modelID).Scan(&kind, &repository, &revision, &status); err != nil {
+		return nil, errors.New("registered model not found")
+	}
+	if kind != "huggingface" {
+		return nil, errors.New("only registered Hugging Face models can be downloaded")
+	}
+	switch status {
+	case "registered", "error", "failed", "canceled":
+	case "ready":
+		return nil, errors.New("model is already ready")
+	default:
+		return nil, errors.New("model is not available for download")
+	}
+	return d.DownloadRequest(parent, Request{
+		ID:          id,
+		ModelID:     modelID,
+		Repository:  repository,
+		Revision:    revision,
+		Destination: filepath.Join(root, modelID),
+		Token:       token,
+	})
+}
+
 type Request struct {
 	ID          string `json:"id"`
 	ModelID     string `json:"model_id,omitempty"`

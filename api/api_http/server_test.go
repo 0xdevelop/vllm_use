@@ -161,10 +161,13 @@ func TestMajorAdminRoutesAndJSONContract(t *testing.T) {
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("unknown download field accepted: %d %s", w.Code, w.Body.String())
 	}
-	w = request(t, h, http.MethodPost, "/api/downloads", "admin", `{"id":"linked","model_id":`+jsonString(modelID)+`,"repository":"owner/model","revision":"main","destination":`+jsonString(destination)+`}`)
+	w = request(t, h, http.MethodPost, "/api/downloads", "admin", `{"id":"linked","model_id":`+jsonString(modelID)+`}`)
 	linked := decodeObject(t, w)
 	if w.Code != http.StatusOK || linked["model_id"] != modelID || linked["revision"] != "main" || linked["repository"] != "owner/model" {
 		t.Fatalf("linked download contract: %d %#v", w.Code, linked)
+	}
+	if linked["destination"] != filepath.Join(modelsRoot, modelID) {
+		t.Fatalf("server did not derive download destination: %#v", linked)
 	}
 	for deadline := time.Now().Add(time.Second); ; time.Sleep(time.Millisecond) {
 		value, err := api_executer.ExecuteAbility(api_executer.WithAdmin(context.Background()), ability_download.MethodStatus, map[string]interface{}{"id": "linked"})
