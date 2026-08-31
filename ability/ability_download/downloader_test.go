@@ -66,7 +66,11 @@ func TestDownloadStructuredArgsRedactionAndStates(t *testing.T) {
 	t.Setenv("HF_HOME", "/inherited/cache")
 	r := &fakeRunner{cmd: &fakeCmd{out: "50% token-secret\n100%\n"}}
 	d := New("hf", r)
-	if _, e := d.DownloadRequest(context.Background(), Request{ID: "one", Repository: "org/model", Revision: "refs/pr/2", Destination: "/models/m", Token: "token-secret"}); e != nil {
+	destination := filepath.Join(t.TempDir(), "model")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, e := d.DownloadRequest(context.Background(), Request{ID: "one", Repository: "org/model", Revision: "refs/pr/2", Destination: destination, Token: "token-secret"}); e != nil {
 		t.Fatal(e)
 	}
 	deadline := time.Now().Add(time.Second)
@@ -76,7 +80,7 @@ func TestDownloadStructuredArgsRedactionAndStates(t *testing.T) {
 			if strings.Contains(strings.Join(j.Logs, ""), "token-secret") {
 				t.Fatal("secret leaked")
 			}
-			wantArgs := []string{"download", "org/model", "--local-dir", "/models/m", "--revision", "refs/pr/2"}
+			wantArgs := []string{"download", "org/model", "--local-dir", destination, "--revision", "refs/pr/2"}
 			if r.name != "hf" || strings.Join(r.args, "|") != strings.Join(wantArgs, "|") || strings.Contains(strings.Join(r.args, " "), "token-secret") {
 				t.Fatalf("args %#v", r.args)
 			}
@@ -111,7 +115,11 @@ func TestConfiguredHFHomeOverridesInheritedValue(t *testing.T) {
 	r := &fakeRunner{cmd: &fakeCmd{}}
 	d := New("hf", r)
 	d.SetHFHome("/configured")
-	if _, err := d.Download(context.Background(), "home", "org/model", "/models/home", ""); err != nil {
+	destination := filepath.Join(t.TempDir(), "model")
+	if err := os.Mkdir(destination, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Download(context.Background(), "home", "org/model", destination, ""); err != nil {
 		t.Fatal(err)
 	}
 	waitForState(t, d, "home", Succeeded)
@@ -174,6 +182,40 @@ func TestRegisteredModelDownloadLifecycleAndRestore(t *testing.T) {
 	waitForState(t, restored, "linked", Canceled)
 	if err = s.DB.QueryRow(`SELECT status FROM models WHERE id='model-id'`).Scan(&status); err != nil || status != "canceled" {
 		t.Fatalf("restored model status %q err=%v", status, err)
+	}
+}
+
+func TestSuccessfulCommandWithoutModelFilesFailsLinkedDownload(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "missing-model")
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-id','huggingface','org/model',NULL,?,'model','org/model','',0,'registered',?)`, now, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+	d.SetRoot(root)
+	d.SetStore(st)
+	if _, err = d.DownloadRequest(context.Background(), Request{ID: "empty-success", ModelID: "model-id", Repository: "org/model", Destination: destination}); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, d, "empty-success", Failed)
+	job, _ := d.Status("empty-success")
+	if !strings.Contains(job.Error, "download destination") {
+		t.Fatalf("job error = %q", job.Error)
+	}
+	var status, localPath string
+	if err = st.DB.QueryRow(`SELECT status,COALESCE(local_path,'') FROM models WHERE id='model-id'`).Scan(&status, &localPath); err != nil {
+		t.Fatal(err)
+	}
+	if status != "error" || localPath != "" {
+		t.Fatalf("model state = %q path=%q", status, localPath)
 	}
 }
 

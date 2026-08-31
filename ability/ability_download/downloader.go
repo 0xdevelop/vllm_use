@@ -225,7 +225,7 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 	j.StartedAt = &now
 	d.jobs[id] = j
 	d.persistLocked(j)
-	d.updateModelLocked(j, Running)
+	d.updateModelLocked(j, Running, "", 0)
 	d.wg.Add(1)
 	d.mu.Unlock()
 	select {
@@ -333,6 +333,14 @@ func (d *Downloader) consume(j *Job, r io.Reader, secret string) error {
 	return nil
 }
 func (d *Downloader) finish(j *Job, s State, e error) {
+	localPath := ""
+	var size int64
+	if s == Succeeded && e == nil {
+		localPath, size, e = d.completedDownload(j.Destination)
+		if e != nil {
+			s = Failed
+		}
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	j.State = s
@@ -347,7 +355,7 @@ func (d *Downloader) finish(j *Job, s State, e error) {
 	j.cancel = nil
 	j.secret = ""
 	d.persistLocked(j)
-	d.updateModelLocked(j, s)
+	d.updateModelLocked(j, s, localPath, size)
 }
 
 func setEnvironment(env []string, key, value string) []string {
@@ -361,20 +369,17 @@ func setEnvironment(env []string, key, value string) []string {
 	return append(out, prefix+value)
 }
 
-func (d *Downloader) updateModelLocked(j *Job, state State) {
+func (d *Downloader) updateModelLocked(j *Job, state State, localPath string, size int64) {
 	if d.store == nil || j.ModelID == "" {
 		return
 	}
 	status := "error"
-	localPath := ""
-	var size int64
 	switch state {
 	case Running, Pending:
 		status = "downloading"
 	case Succeeded:
-		status = "ready"
-		if measured, err := directorySize(j.Destination); err == nil {
-			localPath, size = j.Destination, measured
+		if localPath != "" {
+			status = "ready"
 		}
 	case Canceled:
 		status = "canceled"
@@ -385,6 +390,41 @@ func (d *Downloader) updateModelLocked(j *Job, state State) {
 	} else {
 		_, _ = d.store.DB.ExecContext(context.Background(), `UPDATE models SET status=?,updated_at=? WHERE id=?`, status, now, j.ModelID)
 	}
+}
+
+func (d *Downloader) completedDownload(destination string) (string, int64, error) {
+	info, err := os.Lstat(destination)
+	if err != nil {
+		return "", 0, errors.New("download destination is unavailable: " + err.Error())
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", 0, errors.New("download destination must not be a symlink")
+	}
+	if !info.IsDir() {
+		return "", 0, errors.New("download destination must be a directory")
+	}
+	real, err := filepath.EvalSymlinks(destination)
+	if err != nil {
+		return "", 0, errors.New("resolve download destination: " + err.Error())
+	}
+	d.mu.RLock()
+	root := d.root
+	d.mu.RUnlock()
+	if root != "" {
+		rootReal, resolveErr := filepath.EvalSymlinks(root)
+		if resolveErr != nil {
+			return "", 0, errors.New("resolve models root: " + resolveErr.Error())
+		}
+		rel, relErr := filepath.Rel(rootReal, real)
+		if relErr != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", 0, errors.New("download destination escapes models root")
+		}
+	}
+	size, err := directorySize(real)
+	if err != nil {
+		return "", 0, errors.New("inspect download destination: " + err.Error())
+	}
+	return real, size, nil
 }
 
 func directorySize(root string) (int64, error) {
@@ -475,7 +515,7 @@ func (d *Downloader) restore() {
 		d.jobs[j.ID] = &j
 		if state == string(Running) || state == string(Pending) {
 			d.persistLocked(&j)
-			d.updateModelLocked(&j, Canceled)
+			d.updateModelLocked(&j, Canceled, "", 0)
 		}
 	}
 }
