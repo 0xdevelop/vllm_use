@@ -137,6 +137,39 @@ func (r *Registry) Get(ctx context.Context, id string) (Model, error) {
 	return scanModel(r.store.DB.QueryRowContext(ctx, selectModel+` WHERE id=?`, id))
 }
 
+// ResolveRuntimeModel revalidates the persisted model path at the last domain
+// boundary before a runtime launch. A ready database row is not sufficient:
+// files may have disappeared or a local path may have been replaced after
+// registration.
+func (r *Registry) ResolveRuntimeModel(ctx context.Context, id string) (Model, error) {
+	m, err := r.Get(ctx, id)
+	if err != nil {
+		return Model{}, err
+	}
+	if m.Status != "ready" || m.LocalPath == "" {
+		return Model{}, errors.New("model is not ready for runtime")
+	}
+	info, err := os.Lstat(m.LocalPath)
+	if err != nil {
+		return Model{}, fmt.Errorf("inspect runtime model path: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return Model{}, errors.New("runtime model path must not be a symlink")
+	}
+	if !info.IsDir() {
+		return Model{}, errors.New("runtime model path must be a directory")
+	}
+	resolved, err := r.safeExisting(m.LocalPath)
+	if err != nil {
+		return Model{}, err
+	}
+	if resolved != filepath.Clean(m.LocalPath) {
+		return Model{}, errors.New("runtime model path changed after registration")
+	}
+	m.LocalPath = resolved
+	return m, nil
+}
+
 const selectModel = `SELECT id,name,kind,source,repository,revision,COALESCE(local_path,''),size_bytes,status,created_at,updated_at FROM models`
 
 type scanner interface{ Scan(...any) error }

@@ -33,7 +33,7 @@ MCP 还要求 `Mcp-Protocol-Version: 2026-07-28`，并使用 Go 标准库跨源�
 
 - `ability_model`：扫描、登记、查询和删除模型。
 - `ability_download`：通过宿主机 Hugging Face CLI 下载、重试、取消、查询日志。HTTP/MCP 只能携带任务 `id`、已登记 Hugging Face 模型的 `model_id` 和一次性 token；服务从 SQLite 读取 repository/revision，并把目标目录固定派生为 `<models-dir>/<model_id>`，客户端不能注入仓库或主机路径。CLI 退出成功后还会校验目标是模型根目录内真实可读的目录并计量文件大小，校验通过才将任务及同一模型记录转为 `succeeded` / `ready`，而不是产生与模型注册表脱节或无可用文件的假成功任务。
-- `ability_runtime`：构造受约束参数，监督唯一宿主机 vLLM 进程并切换活动模型。`runtime.switch` 以 SQLite 中的 `model_id` 为权威，只允许切换到状态为 `ready` 且具有受管本地路径的模型；调用方不能用 `options.model` 绕过模型登记状态。切换会接管并停止此前通过底层 `runtime.start` 直接启动的进程；重启会先完整校验替换参数，非法配置不会停止健康进程。运行状态只在当前进程确由模型注册表启动时返回对应 `active_model_id`，直接启动或重启不会沿用过期关联。Web Admin 的启动/切换入口只选择这些就绪模型。常用 vLLM flags 使用类型化字段，`extra_args` 仅接受结构化的合法 flag 名和值，不能通过值注入另一项 `--flag` 或覆盖保留参数。
+- `ability_runtime`：构造受约束参数，监督唯一宿主机 vLLM 进程并切换活动模型。`runtime.switch` 以 SQLite 中的 `model_id` 为权威，只允许切换到状态为 `ready` 且具有受管本地路径的模型；启动前会重新确认登记路径仍是模型根目录内的真实目录，拒绝缺失、普通文件、被替换的符号链接或逃逸路径，调用方不能用 `options.model` 绕过模型登记状态。切换会接管并停止此前通过底层 `runtime.start` 直接启动的进程；重启会先完整校验替换参数，非法配置不会停止健康进程。运行状态只在当前进程确由模型注册表启动时返回对应 `active_model_id`，直接启动或重启不会沿用过期关联。Web Admin 的启动/切换入口只选择这些就绪模型。常用 vLLM flags 使用类型化字段，`extra_args` 仅接受结构化的合法 flag 名和值，不能通过值注入另一项 `--flag` 或覆盖保留参数。
 - `ability_gpu`：读取真实 `nvidia-smi` 状态。
 - `ability_api_key`：创建、列出、启停和删除带 scope 的 API key。
 - `ability_settings`：保存、删除非敏感设置与读取最近 Gateway 请求元数据。HTTP Web Admin 和 MCP 都通过统一注册方法删除设置；token、password、credential、API key 等敏感键会被拒绝写入，凭据只能来自环境变量或 CLI flags，升级时会清理旧版 SQLite 中的敏感设置行。

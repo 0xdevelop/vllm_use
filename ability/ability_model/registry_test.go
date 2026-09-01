@@ -11,6 +11,58 @@ import (
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 )
 
+func TestResolveRuntimeModelRevalidatesManagedDirectory(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	root := filepath.Join(base, "models")
+	outside := filepath.Join(base, "outside")
+	if err := os.MkdirAll(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	registry := New(store, root)
+
+	path := filepath.Join(root, "ready")
+	if err = os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	model, err := registry.RegisterLocal(ctx, "ready", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := registry.ResolveRuntimeModel(ctx, model.ID)
+	if err != nil || resolved.LocalPath != path {
+		t.Fatalf("resolve ready model = %#v, %v", resolved, err)
+	}
+
+	if err = os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Symlink(outside, path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.ResolveRuntimeModel(ctx, model.ID); err == nil {
+		t.Fatal("runtime resolver accepted a model path replaced by an escaping symlink")
+	}
+
+	if err = os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.ResolveRuntimeModel(ctx, model.ID); err == nil {
+		t.Fatal("runtime resolver accepted a regular file")
+	}
+}
+
 func TestRegistryBoundariesAndCRUD(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "models")

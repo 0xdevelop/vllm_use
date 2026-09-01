@@ -116,7 +116,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 	downloads.SetHFHome(c.HFHome)
 	registry := ability_model.New(st, c.ModelsDir)
 	switcher.SetModelResolver(func(ctx context.Context, id string) (ability_runtime.ModelTarget, error) {
-		model, resolveErr := registry.Get(ctx, id)
+		model, resolveErr := registry.ResolveRuntimeModel(ctx, id)
 		if resolveErr != nil {
 			return ability_runtime.ModelTarget{}, resolveErr
 		}
