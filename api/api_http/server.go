@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -271,8 +272,12 @@ func decode(w http.ResponseWriter, r *http.Request, v any) bool {
 		writeError(w, http.StatusBadRequest, "invalid JSON")
 		return false
 	}
-	if d.Decode(&struct{}{}) == nil {
-		writeError(w, http.StatusBadRequest, "multiple JSON values")
+	if e := d.Decode(&struct{}{}); !errors.Is(e, io.EOF) {
+		message := "invalid JSON"
+		if e == nil {
+			message = "multiple JSON values"
+		}
+		writeError(w, http.StatusBadRequest, message)
 		return false
 	}
 	return true

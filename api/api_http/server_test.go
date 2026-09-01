@@ -108,6 +108,19 @@ func TestAdminAuthErrorsAndWebNamespace(t *testing.T) {
 	if w.Code != http.StatusBadRequest || decodeObject(t, w)["error"] != "invalid JSON" {
 		t.Fatalf("decode response: %d %s", w.Code, w.Body.String())
 	}
+	for _, body := range []string{
+		`{"repository":"owner/model"} trailing`,
+		`{"repository":"owner/model"} {"repository":"owner/other"}`,
+	} {
+		w = request(t, h, http.MethodPost, "/api/models/huggingface", "admin", body)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("trailing JSON content accepted for %q: %d %s", body, w.Code, w.Body.String())
+		}
+	}
+	w = request(t, h, http.MethodGet, "/api/models", "admin", "")
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
+		t.Fatalf("invalid requests caused a model registration: %d %s", w.Code, w.Body.String())
+	}
 	w = request(t, h, http.MethodGet, "/api/not-real", "admin", "")
 	if w.Code != http.StatusNotFound || decodeObject(t, w)["error"] != "not found" {
 		t.Fatalf("not found response: %d %s", w.Code, w.Body.String())
