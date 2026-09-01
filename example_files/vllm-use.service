@@ -1,17 +1,43 @@
 [Unit]
-Description=vllm-use service
+Description=vllm-use native vLLM management and inference gateway
+Documentation=https://github.com/0xdevelop/vllm_use
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User=root
+User=vllm-use
+Group=vllm-use
+EnvironmentFile=-/etc/vllm-use/vllm-use.env
+ExecStart=/usr/local/bin/vllm-use
+WorkingDirectory=/var/lib/vllm-use
 Restart=on-failure
 RestartSec=5s
-ExecStart=/vllm-use/vllm-use
-ExecStop=/bin/kill -TERM $MAINPID
-WorkingDirectory=/vllm-use
-LimitNOFILE=102400
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+UMask=0077
+
+# Keep the Go service and its native vLLM/Hugging Face children host-native,
+# while denying privilege escalation and writes outside service-owned state.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+ProtectKernelTunables=true
+ProtectKernelLogs=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=
+AmbientCapabilities=
+StateDirectory=vllm-use
+StateDirectoryMode=0750
+CacheDirectory=vllm-use
+CacheDirectoryMode=0750
+LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target

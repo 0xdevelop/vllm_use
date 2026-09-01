@@ -1,122 +1,124 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-set -e
+set -Eeuo pipefail
 
-APP_NAME=vllm-use
-configFIleName=config.yaml
-APP_DIR="/${APP_NAME}"
+APP_NAME="vllm-use"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
+INSTALL_ROOT="${VLLM_USE_INSTALL_ROOT:-}"
+SYSTEMCTL="${SYSTEMCTL:-systemctl}"
 
-SYSTEMD_PATH="/etc/systemd/system"
-
-SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-PARENT_DIR=$(dirname ${SCRIPT_DIR})
-
-echo parent dir is:$PARENT_DIR
-
-function clear_install_files() {
-    if [ -d "${PARENT_DIR}" ]; then
-        find "${PARENT_DIR}" -type f -name "${APP_NAME}*" -exec rm -f {} \;
-        find "${PARENT_DIR}" -type d -name "${APP_NAME}*" -empty -delete
-        rm -rf ${SCRIPT_DIR}
-    fi
+prefix_path() {
+    printf '%s%s' "${INSTALL_ROOT%/}" "$1"
 }
 
-function install() {
+BIN_SOURCE="${SCRIPT_DIR}/${APP_NAME}"
+SERVICE_SOURCE="${SCRIPT_DIR}/${APP_NAME}.service"
+ENV_SOURCE="${SCRIPT_DIR}/${APP_NAME}.env"
+BIN_TARGET="$(prefix_path "/usr/local/bin/${APP_NAME}")"
+SERVICE_TARGET="$(prefix_path "/etc/systemd/system/${APP_NAME}.service")"
+ENV_TARGET="$(prefix_path "/etc/${APP_NAME}/${APP_NAME}.env")"
+STATE_DIR="$(prefix_path "/var/lib/${APP_NAME}")"
+CACHE_DIR="$(prefix_path "/var/cache/${APP_NAME}")"
 
-    if [[ -f ${SCRIPT_DIR}/${APP_NAME} ]] && [[ -f ${SCRIPT_DIR}/${APP_NAME}.service ]] && [[ -f ${SCRIPT_DIR}/conf/${configFIleName} ]]; then
-        if [ ! -d "${APP_DIR}" ]; then
-            mkdir -p ${APP_DIR}
-            mkdir -p ${APP_DIR}/logs
-            mkdir -p ${APP_DIR}/conf
-        fi
+usage() {
+    cat >&2 <<'USAGE'
+Usage: install_vllm-use.sh install|update|uninstall
 
-        # install binary
-        TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
-        if [[ -f "${APP_DIR}/${APP_NAME}" ]]; then
-            mv "${APP_DIR}/${APP_NAME}" "${APP_DIR}/${APP_NAME}.bak_${TIMESTAMP}"
-        fi
-        cp -f "${SCRIPT_DIR}/${APP_NAME}" "${APP_DIR}/${APP_NAME}"
+Install/update expects vllm-use, vllm-use.service and vllm-use.env next to this script.
+Uninstall removes program and service files but preserves configuration, models,
+SQLite data and the service account.
+USAGE
+}
 
-        # configure file
-        if [[ -f "${APP_DIR}/conf/${configFIleName}" ]]; then
-            mv "${APP_DIR}/conf/${configFIleName}" "${APP_DIR}/conf/${configFIleName}.bak_${TIMESTAMP}"
-        fi
-        cp -f ${SCRIPT_DIR}/conf/${configFIleName} ${APP_DIR}/conf/${configFIleName}
-
-        # install systemd file to SYSTEMD_PATH and restart service
-        service_file=${SCRIPT_DIR}/${APP_NAME}.service
-        if [[ -f "${service_file}" ]]; then
-            cp -f "${service_file}" "${SYSTEMD_PATH}"
-            service_name=$(basename "${service_file}" .service)
-            systemctl enable "${service_name}"
-            systemctl daemon-reload
-            systemctl start "${service_name}.service"
-        fi
-    else
-        echo "installation file error"
+require_root() {
+    if [[ -z "${INSTALL_ROOT}" && "${EUID}" -ne 0 ]]; then
+        echo "error: run as root (or set VLLM_USE_INSTALL_ROOT for packaging tests)" >&2
         exit 1
     fi
 }
 
-function updateBinary() {
-    read -p "sure want to update ${APP_NAME} [yes/no]：" flag
-    if [ -z $flag ]; then
-        echo "input error" && exit 1
-    elif [ "$flag" = "yes" -o "$flag" = "ye" -o "$flag" = "y" ]; then
-        # update binary
-        TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
-        systemctl stop "${APP_NAME}.service"
-        if [[ -f "${APP_DIR}/${APP_NAME}" ]]; then
-            mv "${APP_DIR}/${APP_NAME}" "${APP_DIR}/${APP_NAME}.bak_${TIMESTAMP}"
+require_payload() {
+    local file
+    for file in "${BIN_SOURCE}" "${SERVICE_SOURCE}" "${ENV_SOURCE}"; do
+        if [[ ! -f "${file}" ]]; then
+            echo "error: missing installation payload: ${file}" >&2
+            exit 1
         fi
-        cp -f "${SCRIPT_DIR}/${APP_NAME}" "${APP_DIR}/${APP_NAME}"
-
-        # update systemd service
-        service_file=${SCRIPT_DIR}/${APP_NAME}.service
-        if [[ -f "${service_file}" ]]; then
-            cp -f "${service_file}" "${SYSTEMD_PATH}"
-            systemctl daemon-reload
-            systemctl restart "${APP_NAME}.service"
-        fi
+    done
+    if [[ ! -x "${BIN_SOURCE}" ]]; then
+        echo "error: binary is not executable: ${BIN_SOURCE}" >&2
+        exit 1
     fi
 }
 
-function uninstall() {
-    read -p "sure want to uninstall ${APP_NAME} [yes/no]：" flag
-    if [ -z "$flag" ]; then
-        echo "input error" && exit 1
-    elif [ "$flag" = "yes" ] || [ "$flag" = "ye" ] || [ "$flag" = "y" ]; then
-        for service_file in ${SYSTEMD_PATH}/${APP_NAME}*.service; do
-            if [[ -f ${service_file} ]]; then
-                service_name=$(basename ${service_file} .service)
-                systemctl disable --now ${service_name}
-                rm -f ${service_file}
-            fi
-        done
+ensure_service_account() {
+    [[ -n "${INSTALL_ROOT}" ]] && return
+    if ! getent passwd "${APP_NAME}" >/dev/null; then
+        useradd --system --home-dir "/var/lib/${APP_NAME}" --create-home --shell /usr/sbin/nologin "${APP_NAME}"
+    fi
 
-        rm -rf ${APP_DIR}
-        echo "uninstall ${APP_NAME} success"
+    local group
+    for group in video render; do
+        if getent group "${group}" >/dev/null; then
+            usermod --append --groups "${group}" "${APP_NAME}"
+        fi
+    done
+}
+
+install_files() {
+    require_payload
+    ensure_service_account
+
+    install -D -m 0755 "${BIN_SOURCE}" "${BIN_TARGET}"
+    install -D -m 0644 "${SERVICE_SOURCE}" "${SERVICE_TARGET}"
+    install -d -m 0750 "$(dirname -- "${ENV_TARGET}")" "${STATE_DIR}" "${CACHE_DIR}"
+    if [[ ! -e "${ENV_TARGET}" ]]; then
+        install -m 0600 "${ENV_SOURCE}" "${ENV_TARGET}"
+    fi
+
+    if [[ -z "${INSTALL_ROOT}" ]]; then
+        chown -R "${APP_NAME}:${APP_NAME}" "${STATE_DIR}" "${CACHE_DIR}"
+        "${SYSTEMCTL}" daemon-reload
     fi
 }
 
+install_service() {
+    install_files
+    if [[ -z "${INSTALL_ROOT}" ]]; then
+        "${SYSTEMCTL}" enable --now "${APP_NAME}.service"
+    fi
+    echo "installed ${APP_NAME}; persistent data: ${STATE_DIR}; configuration: ${ENV_TARGET}"
+}
 
-echo "============================ ${APP_NAME} ============================"
-echo "  1、install ${APP_NAME}"
-echo "  2、update ${APP_NAME}"
-echo "  3、uninstall ${APP_NAME}"
-echo "======================================================================"
-read -p "$(echo -e "place choose [1-3]：")" choose
-case $choose in
-1)
-    install && wait && clear_install_files
-    ;;
-2)
-    updateBinary && wait && clear_install_files
-    ;;
-3)
-    uninstall && wait && clear_install_files
-    ;;
-*)
-    echo "Input error, please try again!"
-    ;;
-esac
+update_service() {
+    install_files
+    if [[ -z "${INSTALL_ROOT}" ]]; then
+        "${SYSTEMCTL}" enable "${APP_NAME}.service"
+        "${SYSTEMCTL}" restart "${APP_NAME}.service"
+    fi
+    echo "updated ${APP_NAME}; existing configuration and data were preserved"
+}
+
+uninstall_service() {
+    if [[ -z "${INSTALL_ROOT}" ]]; then
+        "${SYSTEMCTL}" disable --now "${APP_NAME}.service" 2>/dev/null || true
+    fi
+    rm -f -- "${BIN_TARGET}" "${SERVICE_TARGET}"
+    if [[ -z "${INSTALL_ROOT}" ]]; then
+        "${SYSTEMCTL}" daemon-reload
+        "${SYSTEMCTL}" reset-failed "${APP_NAME}.service" 2>/dev/null || true
+    fi
+    echo "uninstalled ${APP_NAME}; preserved ${ENV_TARGET}, ${STATE_DIR}, ${CACHE_DIR}, and the service account"
+}
+
+main() {
+    require_root
+    case "${1:-}" in
+        install) install_service ;;
+        update) update_service ;;
+        uninstall) uninstall_service ;;
+        *) usage; exit 2 ;;
+    esac
+}
+
+main "$@"

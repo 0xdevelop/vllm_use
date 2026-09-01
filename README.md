@@ -42,6 +42,34 @@ go run . --listen 127.0.0.1:8080
 
 服务直接调用宿主机 `vllm`、`hf` 和 `nvidia-smi`，不使用 Docker。缺少这些程序时不会伪造运行、下载或 GPU 结果。
 
+## systemd 宿主机部署
+
+发布包可用 `example_files/install_vllm-use.sh` 安装。安装脚本要求同目录存在可执行的 `vllm-use`、`vllm-use.service` 和 `vllm-use.env`，并且必须显式选择动作，不会扫描或删除解压目录：
+
+```bash
+sudo ./example_files/install_vllm-use.sh install
+sudo systemctl status vllm-use.service
+```
+
+默认布局：
+
+- 二进制：`/usr/local/bin/vllm-use`
+- 私有环境文件：`/etc/vllm-use/vllm-use.env`（首次安装创建为 `0600`，更新不会覆盖）
+- SQLite、模型和 bootstrap token：`/var/lib/vllm-use`
+- Hugging Face cache：`/var/cache/vllm-use`
+- 服务账户：无登录权限的 `vllm-use`，安装时按宿主机现有组加入 `video` / `render` 以访问 NVIDIA 设备
+
+服务默认仍只监听 loopback，并启用 systemd 文件系统与提权防护。请在环境文件中按宿主机安装位置调整 `VLLM_USE_VLLM_BINARY` 和 `VLLM_USE_HF_CLI`；凭据不要写入 unit 或命令行。未设置 admin token 时，首次启动会把 bootstrap token 写入 `/var/lib/vllm-use/admin-bootstrap.token`。
+
+更新与卸载分别使用：
+
+```bash
+sudo ./example_files/install_vllm-use.sh update
+sudo ./example_files/install_vllm-use.sh uninstall
+```
+
+卸载只删除 unit 和程序文件，故意保留环境文件、服务账户、SQLite、模型与缓存，避免误删大模型和审计数据。
+
 ## 架构
 
 管理能力统一走：

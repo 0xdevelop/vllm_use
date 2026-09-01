@@ -62,6 +62,7 @@ function toBuild() {
     go build -o "${build_path}/${RUN_MODE}/${product_name}/${product_name}" -trimpath -ldflags "${ld_flag_master}" main.go
     chmod a+x "${build_path}/${RUN_MODE}/${product_name}/${product_name}"
     [[ -f "./example_files/${product_name}.service" ]] && cp "./example_files/${product_name}.service" "${build_path}/${RUN_MODE}/${product_name}/"
+    [[ -f "./example_files/${product_name}.env" ]] && cp "./example_files/${product_name}.env" "${build_path}/${RUN_MODE}/${product_name}/"
     [[ -f "./example_files/install_${product_name}.sh" ]] && cp "./example_files/install_${product_name}.sh" "${build_path}/${RUN_MODE}/${product_name}/install_${product_name}.sh"
     mkdir -p "${build_path}/${RUN_MODE}/${product_name}/conf"
     [[ -f "./example_files/config_example.yaml" ]] && cp "./example_files/config_example.yaml" "${build_path}/${RUN_MODE}/${product_name}/conf/config.yaml"

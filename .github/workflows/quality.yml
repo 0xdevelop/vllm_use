@@ -73,3 +73,26 @@ jobs:
 
       - name: Build Go packages
         run: go build ./...
+
+      - name: Verify systemd package lifecycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n example_files/install_vllm-use.sh
+          systemd-analyze security --offline=yes example_files/vllm-use.service >/dev/null
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+          mkdir -p "$work/payload" "$work/root"
+          cp example_files/install_vllm-use.sh example_files/vllm-use.service example_files/vllm-use.env "$work/payload/"
+          go build -o "$work/payload/vllm-use" .
+          VLLM_USE_INSTALL_ROOT="$work/root" "$work/payload/install_vllm-use.sh" install
+          test -x "$work/root/usr/local/bin/vllm-use"
+          test "$(stat -c '%a' "$work/root/etc/vllm-use/vllm-use.env")" = 600
+          printf '\n# preserved operator override\n' >> "$work/root/etc/vllm-use/vllm-use.env"
+          VLLM_USE_INSTALL_ROOT="$work/root" "$work/payload/install_vllm-use.sh" update
+          grep -q '^# preserved operator override$' "$work/root/etc/vllm-use/vllm-use.env"
+          VLLM_USE_INSTALL_ROOT="$work/root" "$work/payload/install_vllm-use.sh" uninstall
+          test ! -e "$work/root/usr/local/bin/vllm-use"
+          test ! -e "$work/root/etc/systemd/system/vllm-use.service"
+          test -f "$work/root/etc/vllm-use/vllm-use.env"
+          test -d "$work/root/var/lib/vllm-use"
