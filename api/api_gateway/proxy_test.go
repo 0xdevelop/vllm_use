@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 type roundTrip func(*http.Request) (*http.Response, error)
@@ -135,6 +137,71 @@ func TestResponsesSuffixAnthropicAliasAndRecording(t *testing.T) {
 	}
 	if len(records) != 5 || !modelSeen || !unauthorized {
 		t.Fatalf("records %#v", records)
+	}
+}
+
+func TestClientControlledAuditMetadataIsBoundedWithoutChangingInferenceBody(t *testing.T) {
+	u, _ := url.Parse("http://127.0.0.1:8000")
+	recorded := make(chan RequestMetadata, 1)
+	g := NewWithOptions(u, VerifyFunc(func(context.Context, string, string) (Principal, error) {
+		return Principal{KeyID: "key-bounded"}, nil
+	}), Options{Record: func(_ context.Context, metadata RequestMetadata) {
+		recorded <- metadata
+	}})
+
+	model := strings.Repeat("模", 200)
+	body := `{"model":` + strconv.Quote(model) + `,"prompt":"unchanged"}`
+	forwarded := ""
+	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		got, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		forwarded = string(got)
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+	})
+
+	path := "/v1/responses/" + strings.Repeat("p", maxAuditPathBytes)
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req.RemoteAddr = strings.Repeat("a", maxAuditRemoteAddrBytes+1)
+	req.Header.Set("Authorization", "Bearer ok")
+	req.Header.Set("X-Request-ID", strings.Repeat("r", 1024))
+	w := httptest.NewRecorder()
+	g.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK || forwarded != body {
+		t.Fatalf("status=%d forwarded body changed=%v", w.Code, forwarded != body)
+	}
+	requestID := w.Header().Get("X-Request-ID")
+	if requestID == "" || len(requestID) > maxAuditRequestIDBytes || requestID == strings.Repeat("r", 1024) {
+		t.Fatalf("unsafe response request id %q", requestID)
+	}
+	select {
+	case metadata := <-recorded:
+		if metadata.RequestID != requestID {
+			t.Fatalf("recorded request id %q != response id %q", metadata.RequestID, requestID)
+		}
+		if len(metadata.Model) > maxAuditModelBytes || !utf8.ValidString(metadata.Model) {
+			t.Fatalf("unsafe recorded model: bytes=%d valid_utf8=%v", len(metadata.Model), utf8.ValidString(metadata.Model))
+		}
+		if len(metadata.Path) != maxAuditPathBytes || len(metadata.RemoteAddr) != maxAuditRemoteAddrBytes {
+			t.Fatalf("audit bounds path=%d remote_addr=%d", len(metadata.Path), len(metadata.RemoteAddr))
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for audit metadata")
+	}
+}
+
+func TestAuditRequestIDAcceptsOnlyBoundedVisibleASCII(t *testing.T) {
+	valid := "req_01HZX-abc.def:123"
+	if got := auditRequestID(valid); got != valid {
+		t.Fatalf("valid request id changed to %q", got)
+	}
+	for _, invalid := range []string{"", "contains space", "中文", strings.Repeat("x", maxAuditRequestIDBytes+1)} {
+		got := auditRequestID(invalid)
+		if got == "" || got == invalid || len(got) > maxAuditRequestIDBytes {
+			t.Fatalf("invalid request id %q produced %q", invalid, got)
+		}
 	}
 }
 

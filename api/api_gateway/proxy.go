@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 type Verifier interface {
@@ -51,7 +52,14 @@ type Options struct {
 	Record      func(context.Context, RequestMetadata)
 }
 
-const maxJSONBody = 16 << 20
+const (
+	maxJSONBody             = 16 << 20
+	maxAuditRequestIDBytes  = 128
+	maxAuditMethodBytes     = 32
+	maxAuditPathBytes       = 2048
+	maxAuditModelBytes      = 512
+	maxAuditRemoteAddrBytes = 256
+)
 
 func New(upstream *url.URL, v Verifier) *Gateway {
 	return NewWithOptions(upstream, v, Options{})
@@ -111,20 +119,17 @@ func (g *Gateway) finishRecord() {
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
-	rid := r.Header.Get("X-Request-ID")
-	if rid == "" {
-		b := make([]byte, 12)
-		if _, e := rand.Read(b); e == nil {
-			rid = hex.EncodeToString(b)
-		} else {
-			rid = "request"
-		}
-	}
+	rid := auditRequestID(r.Header.Get("X-Request-ID"))
 	w.Header().Set("X-Request-ID", rid)
 	r.Header.Set("X-Request-ID", rid)
 	rw := &statusWriter{ResponseWriter: w, status: 200}
 	w = rw
-	meta := RequestMetadata{RequestID: rid, Method: r.Method, Path: r.URL.Path, RemoteAddr: r.RemoteAddr}
+	meta := RequestMetadata{
+		RequestID:  rid,
+		Method:     truncateUTF8(r.Method, maxAuditMethodBytes),
+		Path:       truncateUTF8(r.URL.Path, maxAuditPathBytes),
+		RemoteAddr: truncateUTF8(r.RemoteAddr, maxAuditRemoteAddrBytes),
+	}
 	defer func() {
 		if g.record != nil {
 			meta.StatusCode = rw.status
@@ -199,7 +204,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				var trailing any
 				if decoder.Decode(&trailing) == io.EOF {
 					if m, ok := obj["model"].(string); ok {
-						meta.Model = m
+						meta.Model = truncateUTF8(m, maxAuditModelBytes)
 						if actual, exists := g.aliases[m]; exists {
 							obj["model"] = actual
 							body, _ = json.Marshal(obj)
@@ -212,6 +217,37 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		r.ContentLength = int64(len(body))
 	}
 	g.proxy.ServeHTTP(w, r)
+}
+
+func auditRequestID(value string) string {
+	if len(value) > 0 && len(value) <= maxAuditRequestIDBytes {
+		valid := true
+		for i := 0; i < len(value); i++ {
+			if value[i] < 0x21 || value[i] > 0x7e {
+				valid = false
+				break
+			}
+		}
+		if valid {
+			return value
+		}
+	}
+	b := make([]byte, 12)
+	if _, err := rand.Read(b); err == nil {
+		return hex.EncodeToString(b)
+	}
+	return "request"
+}
+
+func truncateUTF8(value string, limit int) string {
+	if len(value) <= limit {
+		return value
+	}
+	value = value[:limit]
+	for len(value) > 0 && !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value
 }
 
 type statusWriter struct {
