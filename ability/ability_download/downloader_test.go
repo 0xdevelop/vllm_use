@@ -87,6 +87,97 @@ func TestDownloadRejectsAcceptanceWhenSQLitePersistenceFails(t *testing.T) {
 	}
 }
 
+func TestTerminalPersistenceIsAtomicWithLinkedModel(t *testing.T) {
+	root := t.TempDir()
+	destination := filepath.Join(root, "model-1")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destination, "weights"), []byte("weights"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = store.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-1','huggingface','org/model',NULL,?,'model','org/model','',0,'downloading',?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB.Exec(`INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES('job-1','model-1','org/model','',?,'running',0,'','[]',?,NULL,?,?)`, destination, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB.Exec(`CREATE TRIGGER reject_model_ready BEFORE UPDATE OF status ON models WHEN NEW.status='ready' BEGIN SELECT RAISE(ABORT, 'forced terminal persistence failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	downloader := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+	downloader.SetRoot(root)
+	downloader.SetStore(store)
+	job, ok := downloader.jobs["job-1"]
+	if !ok {
+		t.Fatal("restored job missing")
+	}
+	if job.ModelID != "model-1" {
+		t.Fatalf("restored model association = %q", job.ModelID)
+	}
+	// Restore truthfully converts an interrupted job to canceled, so put both
+	// durable records back into the running/downloading pre-terminal state.
+	job.State = Running
+	job.Error = ""
+	job.FinishedAt = nil
+	if _, err = store.DB.Exec(`UPDATE downloads SET state='running',error='',finished_at=NULL WHERE id='job-1'; UPDATE models SET status='downloading' WHERE id='model-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB.Exec(`UPDATE models SET status='ready' WHERE id='model-1'`); err == nil {
+		t.Fatal("terminal persistence trigger fixture did not reject ready state")
+	}
+	if _, err = store.DB.Exec(`UPDATE models SET status='downloading' WHERE id='model-1'`); err != nil {
+		t.Fatal(err)
+	}
+	localPath, size, checkErr := downloader.completedDownload(destination)
+	if checkErr != nil {
+		t.Fatalf("completion fixture invalid: %v", checkErr)
+	}
+	job.State = Succeeded
+	if persistErr := downloader.persistTerminalLocked(job, localPath, size); persistErr == nil || !strings.Contains(persistErr.Error(), "forced terminal persistence failure") {
+		t.Fatalf("terminal transaction result = %v", persistErr)
+	}
+	job.State = Running
+	if _, err = store.DB.Exec(`UPDATE models SET status='ready' WHERE id='model-1'`); err == nil {
+		t.Fatal("ready-state trigger disappeared after transactional rollback")
+	}
+	if _, err = store.DB.Exec(`UPDATE models SET status='downloading' WHERE id='model-1'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB.Exec(`CREATE TRIGGER reject_job_succeeded BEFORE UPDATE OF state ON downloads WHEN NEW.state='succeeded' BEGIN SELECT RAISE(ABORT, 'forced job terminal persistence failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if job.ModelID != "model-1" || job.Destination != destination {
+		t.Fatalf("job changed before finish: %#v", job)
+	}
+	if err = downloader.finish(job, Succeeded, nil); err == nil || !strings.Contains(err.Error(), "forced job terminal persistence failure") {
+		t.Fatalf("terminal persistence result = %v", err)
+	}
+	var jobState, modelState string
+	if err = store.DB.QueryRow(`SELECT state FROM downloads WHERE id='job-1'`).Scan(&jobState); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.DB.QueryRow(`SELECT status FROM models WHERE id='model-1'`).Scan(&modelState); err != nil {
+		t.Fatal(err)
+	}
+	if jobState != "running" || modelState != "downloading" {
+		t.Fatalf("split durable terminal state: job=%q model=%q", jobState, modelState)
+	}
+	if current, _ := downloader.Status("job-1"); current.State != Failed || !strings.Contains(current.Error, "persist terminal download state") {
+		t.Fatalf("in-memory persistence failure not exposed: %#v", current)
+	}
+	if err = downloader.Shutdown(context.Background()); err == nil || !strings.Contains(err.Error(), "forced job terminal persistence failure") {
+		t.Fatalf("shutdown did not surface terminal persistence failure: %v", err)
+	}
+}
+
 type fakeCmd struct {
 	out, errout string
 	wait        error

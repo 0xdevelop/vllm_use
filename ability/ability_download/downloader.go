@@ -3,6 +3,7 @@ package ability_download
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -65,19 +66,20 @@ type Job struct {
 	secret      string
 }
 type Downloader struct {
-	mu      sync.RWMutex
-	cli     string
-	runner  Runner
-	jobs    map[string]*Job
-	workers chan struct{}
-	maxLogs int
-	store   *sqlite.Store
-	root    string
-	hfHome  string
-	ctx     context.Context
-	cancel  context.CancelFunc
-	wg      sync.WaitGroup
-	closed  bool
+	mu          sync.RWMutex
+	cli         string
+	runner      Runner
+	jobs        map[string]*Job
+	workers     chan struct{}
+	maxLogs     int
+	store       *sqlite.Store
+	root        string
+	hfHome      string
+	ctx         context.Context
+	cancel      context.CancelFunc
+	wg          sync.WaitGroup
+	closed      bool
+	terminalErr error
 }
 
 func (d *Downloader) SetStore(s *sqlite.Store) {
@@ -273,11 +275,11 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 	select {
 	case d.workers <- struct{}{}:
 	case <-ctx.Done():
-		d.finish(j, Canceled, ctx.Err())
+		_ = d.finish(j, Canceled, ctx.Err())
 		d.wg.Done()
 		return j, ctx.Err()
 	default:
-		d.finish(j, Failed, errors.New("maximum concurrent downloads reached"))
+		_ = d.finish(j, Failed, errors.New("maximum concurrent downloads reached"))
 		d.wg.Done()
 		return j, errors.New("maximum concurrent downloads reached")
 	}
@@ -300,7 +302,7 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 	if e != nil {
 		cancel()
 		<-d.workers
-		d.finish(j, Failed, e)
+		_ = d.finish(j, Failed, e)
 		d.wg.Done()
 		return j, e
 	}
@@ -308,14 +310,14 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 	if e != nil {
 		cancel()
 		<-d.workers
-		d.finish(j, Failed, e)
+		_ = d.finish(j, Failed, e)
 		d.wg.Done()
 		return j, e
 	}
 	if e = cmd.Start(); e != nil {
 		cancel()
 		<-d.workers
-		d.finish(j, Failed, e)
+		_ = d.finish(j, Failed, e)
 		d.wg.Done()
 		return j, e
 	}
@@ -332,11 +334,11 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 		}
 		<-d.workers
 		if ctx.Err() != nil {
-			d.finish(j, Canceled, ctx.Err())
+			_ = d.finish(j, Canceled, ctx.Err())
 		} else if e != nil {
-			d.finish(j, Failed, e)
+			_ = d.finish(j, Failed, e)
 		} else {
-			d.finish(j, Succeeded, nil)
+			_ = d.finish(j, Succeeded, nil)
 		}
 	}()
 	d.mu.RLock()
@@ -374,7 +376,7 @@ func (d *Downloader) consume(j *Job, r io.Reader, secret string) error {
 	}
 	return nil
 }
-func (d *Downloader) finish(j *Job, s State, e error) {
+func (d *Downloader) finish(j *Job, s State, e error) error {
 	localPath := ""
 	var size int64
 	if s == Succeeded && e == nil {
@@ -396,8 +398,14 @@ func (d *Downloader) finish(j *Job, s State, e error) {
 	}
 	j.cancel = nil
 	j.secret = ""
-	d.persistLocked(j)
-	d.updateModelLocked(j, s, localPath, size)
+	if err := d.persistTerminalLocked(j, localPath, size); err != nil {
+		wrapped := fmt.Errorf("persist terminal download state: %w", err)
+		j.State = Failed
+		j.Error = wrapped.Error()
+		d.terminalErr = errors.Join(d.terminalErr, wrapped)
+		return wrapped
+	}
+	return nil
 }
 
 func setEnvironment(env []string, key, value string) []string {
@@ -409,29 +417,6 @@ func setEnvironment(env []string, key, value string) []string {
 		}
 	}
 	return append(out, prefix+value)
-}
-
-func (d *Downloader) updateModelLocked(j *Job, state State, localPath string, size int64) {
-	if d.store == nil || j.ModelID == "" {
-		return
-	}
-	status := "error"
-	switch state {
-	case Running, Pending:
-		status = "downloading"
-	case Succeeded:
-		if localPath != "" {
-			status = "ready"
-		}
-	case Canceled:
-		status = "canceled"
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if status == "ready" && localPath != "" {
-		_, _ = d.store.DB.ExecContext(context.Background(), `UPDATE models SET status=?,local_path=?,size_bytes=?,updated_at=? WHERE id=?`, status, localPath, size, now, j.ModelID)
-	} else {
-		_, _ = d.store.DB.ExecContext(context.Background(), `UPDATE models SET status=?,updated_at=? WHERE id=?`, status, now, j.ModelID)
-	}
 }
 
 func (d *Downloader) completedDownload(destination string) (string, int64, error) {
@@ -556,8 +541,9 @@ func (d *Downloader) restore() {
 		}
 		d.jobs[j.ID] = &j
 		if state == string(Running) || state == string(Pending) {
-			d.persistLocked(&j)
-			d.updateModelLocked(&j, Canceled, "", 0)
+			if err := d.persistTerminalLocked(&j, "", 0); err != nil {
+				d.terminalErr = errors.Join(d.terminalErr, fmt.Errorf("persist interrupted download state: %w", err))
+			}
 		}
 	}
 }
@@ -608,7 +594,10 @@ func (d *Downloader) Shutdown(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
-		return nil
+		d.mu.RLock()
+		err := d.terminalErr
+		d.mu.RUnlock()
+		return err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
@@ -673,6 +662,66 @@ func (d *Downloader) persistLocked(j *Job) {
 		finished = j.FinishedAt.Format(time.RFC3339Nano)
 	}
 	_, _ = d.store.DB.ExecContext(context.Background(), downloadUpsertSQL, j.ID, nullValue(j.ModelID), j.Repo, j.Revision, j.Destination, string(j.State), j.Progress, j.Error, string(logs), started, finished, now, now)
+}
+
+// persistTerminalLocked publishes a linked download's terminal job and model
+// state in one SQLite transaction. Keeping these writes atomic prevents a
+// succeeded job from becoming durable while its model remains downloading (or
+// the inverse) after a database error or process restart.
+func (d *Downloader) persistTerminalLocked(j *Job, localPath string, size int64) error {
+	if d.store == nil {
+		return nil
+	}
+	tx, err := d.store.DB.BeginTx(context.Background(), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	logs, err := json.Marshal(j.Logs)
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	var started, finished any
+	if j.StartedAt != nil {
+		started = j.StartedAt.Format(time.RFC3339Nano)
+	}
+	if j.FinishedAt != nil {
+		finished = j.FinishedAt.Format(time.RFC3339Nano)
+	}
+	if _, err = tx.ExecContext(context.Background(), downloadUpsertSQL, j.ID, nullValue(j.ModelID), j.Repo, j.Revision, j.Destination, string(j.State), j.Progress, j.Error, string(logs), started, finished, now, now); err != nil {
+		return err
+	}
+	if j.ModelID != "" {
+		status := "error"
+		switch j.State {
+		case Running, Pending:
+			status = "downloading"
+		case Succeeded:
+			if localPath != "" {
+				status = "ready"
+			}
+		case Canceled:
+			status = "canceled"
+		}
+		var result sql.Result
+		if status == "ready" && localPath != "" {
+			result, err = tx.ExecContext(context.Background(), `UPDATE models SET status=?,local_path=?,size_bytes=?,updated_at=? WHERE id=?`, status, localPath, size, now, j.ModelID)
+		} else {
+			result, err = tx.ExecContext(context.Background(), `UPDATE models SET status=?,updated_at=? WHERE id=?`, status, now, j.ModelID)
+		}
+		if err != nil {
+			return err
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if rows != 1 {
+			return errors.New("registered model disappeared before terminal download persistence")
+		}
+	}
+	return tx.Commit()
 }
 
 func nullValue(value string) any {
