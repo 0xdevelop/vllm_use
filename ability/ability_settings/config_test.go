@@ -1,8 +1,10 @@
 package ability_settings
 
 import (
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,6 +133,85 @@ func TestDefaultMakesInvalidNumericEnvironmentFailValidation(t *testing.T) {
 			t.Setenv(tc.key, tc.value)
 			if err := Default().Validate(); err == nil {
 				t.Fatalf("invalid %s=%q accepted", tc.key, tc.value)
+			}
+		})
+	}
+}
+
+func TestEnsureAdminTokenCreatesPrivateCredentialAndReusesIt(t *testing.T) {
+	dir := t.TempDir()
+	c := Config{DataDir: dir}
+	path, err := c.EnsureAdminToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path != filepath.Join(dir, "admin-bootstrap.token") || len(c.AdminToken) < 32 {
+		t.Fatalf("unexpected bootstrap result: path=%q token_length=%d", path, len(c.AdminToken))
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("bootstrap mode = %o, want 600", info.Mode().Perm())
+	}
+
+	reloaded := Config{DataDir: dir}
+	if _, err = reloaded.EnsureAdminToken(); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.AdminToken != c.AdminToken {
+		t.Fatal("existing bootstrap token was not reused")
+	}
+}
+
+func TestEnsureAdminTokenHardensExistingCredentialMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "admin-bootstrap.token")
+	want := strings.Repeat("a", 40)
+	if err := os.WriteFile(path, []byte(want), 0644); err != nil {
+		t.Fatal(err)
+	}
+	c := Config{DataDir: dir}
+	if _, err := c.EnsureAdminToken(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.AdminToken != want || info.Mode().Perm() != 0600 {
+		t.Fatalf("existing bootstrap token not hardened: token_match=%v mode=%o", c.AdminToken == want, info.Mode().Perm())
+	}
+}
+
+func TestEnsureAdminTokenRejectsUnsafeCredentialFiles(t *testing.T) {
+	t.Run("symlink", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(t.TempDir(), "target")
+		if err := os.WriteFile(target, []byte(strings.Repeat("b", 40)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(target, filepath.Join(dir, "admin-bootstrap.token")); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := (&Config{DataDir: dir}).EnsureAdminToken(); err == nil {
+			t.Fatal("symlink bootstrap credential accepted")
+		}
+	})
+
+	for name, token := range map[string]string{
+		"trailing_newline": strings.Repeat("c", 40) + "\n",
+		"too_short":        "short",
+		"too_large":        strings.Repeat("d", 4097),
+	} {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "admin-bootstrap.token"), []byte(token), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (&Config{DataDir: dir}).EnsureAdminToken(); err == nil {
+				t.Fatal("unsafe bootstrap credential accepted")
 			}
 		})
 	}

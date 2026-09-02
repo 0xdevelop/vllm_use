@@ -4,6 +4,8 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -12,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Config struct {
@@ -157,22 +160,98 @@ func (c *Config) EnsureAdminToken() (string, error) {
 		return "", nil
 	}
 	p := filepath.Join(c.DataDir, "admin-bootstrap.token")
-	if b, e := os.ReadFile(p); e == nil {
-		c.AdminToken = string(b)
-		if len(c.AdminToken) < 32 {
-			return p, errors.New("bootstrap token file is invalid")
+	for attempts := 0; attempts < 2; attempts++ {
+		token, err := readBootstrapToken(p)
+		if err == nil {
+			c.AdminToken = token
+			return p, nil
 		}
-		return p, nil
+		if !errors.Is(err, os.ErrNotExist) {
+			return p, err
+		}
+
+		b := make([]byte, 32)
+		if _, err = rand.Read(b); err != nil {
+			return p, err
+		}
+		token = base64.RawURLEncoding.EncodeToString(b)
+		if err = createBootstrapToken(p, token); err == nil {
+			c.AdminToken = token
+			return p, nil
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return p, err
+		}
 	}
-	b := make([]byte, 32)
-	if _, e := rand.Read(b); e != nil {
-		return p, e
+	return p, errors.New("bootstrap token file changed while being created")
+}
+
+func readBootstrapToken(path string) (string, error) {
+	pathInfo, err := os.Lstat(path)
+	if err != nil {
+		return "", err
 	}
-	c.AdminToken = base64.RawURLEncoding.EncodeToString(b)
-	if e := os.WriteFile(p, []byte(c.AdminToken), 0600); e != nil {
-		return p, e
+	if !pathInfo.Mode().IsRegular() {
+		return "", errors.New("bootstrap token must be a regular file")
 	}
-	return p, os.Chmod(p, 0600)
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	openedInfo, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
+		return "", errors.New("bootstrap token file changed while being opened")
+	}
+	if err = f.Chmod(0600); err != nil {
+		return "", fmt.Errorf("secure bootstrap token permissions: %w", err)
+	}
+	b, err := io.ReadAll(io.LimitReader(f, 4097))
+	if err != nil {
+		return "", fmt.Errorf("read bootstrap token: %w", err)
+	}
+	currentInfo, err := os.Lstat(path)
+	if err != nil || !os.SameFile(openedInfo, currentInfo) {
+		return "", errors.New("bootstrap token file changed while being read")
+	}
+	token := string(b)
+	if len(token) < 32 || len(token) > 4096 || strings.TrimSpace(token) != token {
+		return "", errors.New("bootstrap token file is invalid")
+	}
+	for _, r := range token {
+		if unicode.IsControl(r) {
+			return "", errors.New("bootstrap token file contains control characters")
+		}
+	}
+	return token, nil
+}
+
+func createBootstrapToken(path, token string) (err error) {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = f.Close()
+			_ = os.Remove(path)
+		}
+	}()
+	if _, err = io.WriteString(f, token); err != nil {
+		return fmt.Errorf("write bootstrap token: %w", err)
+	}
+	if err = f.Sync(); err != nil {
+		return fmt.Errorf("sync bootstrap token: %w", err)
+	}
+	if err = f.Close(); err != nil {
+		return fmt.Errorf("close bootstrap token: %w", err)
+	}
+	keep = true
+	return nil
 }
 
 func (c Config) IsLoopback() bool {

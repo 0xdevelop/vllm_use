@@ -27,7 +27,7 @@ HTTP Adapter 把资源路由映射为注册方法名和 `arguments`；MCP Adapte
 - 管理 HTTP：bootstrap admin token，或 `admin.read` / `admin.write`。
 - MCP：`mcp.read`、`mcp.models`、`mcp.runtime`、`mcp.admin`；`mcp.admin` 可调用全部 MCP tools。
 
-MCP 还要求 `Mcp-Protocol-Version: 2026-07-28`，并使用 Go 标准库跨源保护；可信浏览器 Origin 只能由显式配置加入。
+MCP 还要求 `Mcp-Protocol-Version: 2026-07-28`，并使用 Go 标准库跨源保护；可信浏览器 Origin 只能由显式配置加入。未显式配置管理 token 时，服务仅以原子排他创建方式生成 `0600` 的 bootstrap 凭据文件；重启读取时拒绝符号链接、非普通文件、控制字符和异常长度，并收紧遗留的过宽权限。
 
 ## 产品 Ability
 
