@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -113,5 +114,118 @@ func TestRegistryBoundariesAndCRUD(t *testing.T) {
 	}
 	if _, e = os.Stat(local); !errors.Is(e, os.ErrNotExist) {
 		t.Fatalf("local still exists: %v", e)
+	}
+}
+
+func TestReconcileDeletionQuarantineRestoresOrPurgesByDatabaseTruth(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "models")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	registry := New(store, root)
+
+	stage := func(name string) (Model, string, string) {
+		t.Helper()
+		path := filepath.Join(root, name)
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "weights.bin"), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		model, err := registry.RegisterLocal(ctx, name, path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		qroot := filepath.Join(root, ".quarantine")
+		if err = os.MkdirAll(qroot, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		stageDir := filepath.Join(qroot, model.ID)
+		if err = os.Mkdir(stageDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err = writeDeletionManifest(stageDir, deletionManifest{ID: model.ID, Original: path}); err != nil {
+			t.Fatal(err)
+		}
+		quarantined := filepath.Join(stageDir, "files")
+		if err = os.Rename(path, quarantined); err != nil {
+			t.Fatal(err)
+		}
+		return model, path, stageDir
+	}
+
+	_, restorePath, restoreQuarantine := stage("restore-me")
+	if err = registry.ReconcileDeletionQuarantine(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(filepath.Join(restorePath, "weights.bin")); err != nil {
+		t.Fatalf("database-backed model was not restored: %v", err)
+	}
+	if _, err = os.Stat(restoreQuarantine); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("restored quarantine still exists: %v", err)
+	}
+
+	preRenameStage := filepath.Join(root, ".quarantine", strings.Repeat("a", 32))
+	if err = os.MkdirAll(preRenameStage, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = writeDeletionManifest(preRenameStage, deletionManifest{ID: strings.Repeat("a", 32), Original: restorePath}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.DB.ExecContext(ctx, `UPDATE models SET id=? WHERE local_path=?`, strings.Repeat("a", 32), restorePath); err != nil {
+		t.Fatal(err)
+	}
+	if err = registry.ReconcileDeletionQuarantine(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(filepath.Join(restorePath, "weights.bin")); err != nil {
+		t.Fatalf("pre-rename reconciliation removed original files: %v", err)
+	}
+	if _, err = os.Stat(preRenameStage); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pre-rename deletion stage still exists: %v", err)
+	}
+
+	purged, _, purgeQuarantine := stage("purge-me")
+	if _, err = store.DB.ExecContext(ctx, `DELETE FROM models WHERE id=?`, purged.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = registry.ReconcileDeletionQuarantine(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = os.Stat(purgeQuarantine); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("committed deletion quarantine still exists: %v", err)
+	}
+	if _, err = os.Stat(filepath.Join(root, ".quarantine")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("empty quarantine root still exists: %v", err)
+	}
+}
+
+func TestReconcileDeletionQuarantineRejectsUnknownEntries(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "models")
+	qroot := filepath.Join(root, ".quarantine")
+	if err := os.MkdirAll(qroot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unknown := filepath.Join(qroot, "operator-data")
+	if err := os.WriteFile(unknown, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err = New(store, root).ReconcileDeletionQuarantine(context.Background()); err == nil {
+		t.Fatal("unknown quarantine entry was accepted")
+	}
+	if got, err := os.ReadFile(unknown); err != nil || string(got) != "keep" {
+		t.Fatalf("unknown quarantine entry was changed: %q, %v", got, err)
 	}
 }

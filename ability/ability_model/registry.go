@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -238,6 +240,167 @@ func (r *Registry) Scan(ctx context.Context) ([]Model, error) {
 	}
 	return out, nil
 }
+
+const deletionManifestName = "deletion.json"
+
+type deletionManifest struct {
+	ID       string `json:"id"`
+	Original string `json:"original"`
+}
+
+// ReconcileDeletionQuarantine completes or rolls back model-file deletion after
+// an interrupted process. SQLite remains authoritative: an existing model row
+// means its staged directory must be restored, while an absent row means the
+// committed deletion can be purged. Unknown entries are preserved and fail
+// startup rather than risking deletion of operator data.
+func (r *Registry) ReconcileDeletionQuarantine(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	rootReal, qroot, entries, err := r.deletionQuarantine()
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		id := entry.Name()
+		decoded, decodeErr := hex.DecodeString(id)
+		if decodeErr != nil || len(id) != 32 || id != strings.ToLower(id) || len(decoded) != 16 || !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("unknown deletion quarantine entry %q", id)
+		}
+		stageDir := filepath.Join(qroot, id)
+		manifest, readErr := readDeletionManifest(stageDir)
+		if readErr != nil {
+			return fmt.Errorf("invalid deletion quarantine entry %q: %w", id, readErr)
+		}
+		if manifest.ID != id {
+			return fmt.Errorf("invalid deletion quarantine entry %q: manifest id mismatch", id)
+		}
+		original, validateErr := validateQuarantinedOriginal(rootReal, manifest.Original)
+		if validateErr != nil {
+			return fmt.Errorf("invalid deletion quarantine entry %q: %w", id, validateErr)
+		}
+
+		var persisted string
+		err = r.store.DB.QueryRowContext(ctx, `SELECT COALESCE(local_path,'') FROM models WHERE id=?`, id).Scan(&persisted)
+		if errors.Is(err, sql.ErrNoRows) {
+			if removeErr := os.RemoveAll(stageDir); removeErr != nil {
+				return fmt.Errorf("purge committed model deletion %q: %w", id, removeErr)
+			}
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("resolve quarantined model %q: %w", id, err)
+		}
+		if filepath.Clean(persisted) != original {
+			return fmt.Errorf("quarantined model %q has inconsistent local path", id)
+		}
+		staged := filepath.Join(stageDir, "files")
+		stagedInfo, statErr := os.Lstat(staged)
+		if errors.Is(statErr, os.ErrNotExist) {
+			if originalInfo, originalErr := os.Lstat(original); originalErr != nil || !originalInfo.IsDir() || originalInfo.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("quarantined model %q has neither safe staged nor original files", id)
+			}
+			if removeErr := os.RemoveAll(stageDir); removeErr != nil {
+				return fmt.Errorf("clean incomplete deletion stage %q: %w", id, removeErr)
+			}
+			continue
+		}
+		if statErr != nil || !stagedInfo.IsDir() || stagedInfo.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("unsafe deletion quarantine entry %q", id)
+		}
+		if _, statErr = os.Lstat(original); !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("cannot restore quarantined model %q: destination exists or cannot be inspected", id)
+		}
+		if err = os.Rename(staged, original); err != nil {
+			return fmt.Errorf("restore quarantined model %q: %w", id, err)
+		}
+		if err = os.RemoveAll(stageDir); err != nil {
+			return fmt.Errorf("remove restored deletion stage %q: %w", id, err)
+		}
+	}
+	if err = os.Remove(qroot); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove empty deletion quarantine: %w", err)
+	}
+	return nil
+}
+
+func (r *Registry) deletionQuarantine() (string, string, []os.DirEntry, error) {
+	rootReal, err := filepath.EvalSymlinks(r.root)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("resolve models root: %w", err)
+	}
+	qroot := filepath.Join(rootReal, ".quarantine")
+	qst, err := os.Lstat(qroot)
+	if err != nil {
+		return "", "", nil, err
+	}
+	if !qst.IsDir() || qst.Mode()&os.ModeSymlink != 0 {
+		return "", "", nil, errors.New("deletion quarantine is not a private directory")
+	}
+	if err = os.Chmod(qroot, 0o700); err != nil {
+		return "", "", nil, fmt.Errorf("secure deletion quarantine: %w", err)
+	}
+	entries, err := os.ReadDir(qroot)
+	return rootReal, qroot, entries, err
+}
+
+func validateQuarantinedOriginal(rootReal, original string) (string, error) {
+	original = filepath.Clean(original)
+	if !filepath.IsAbs(original) {
+		return "", errors.New("original model path is not absolute")
+	}
+	parentReal, err := filepath.EvalSymlinks(filepath.Dir(original))
+	if err != nil {
+		return "", fmt.Errorf("resolve original model parent: %w", err)
+	}
+	original = filepath.Join(parentReal, filepath.Base(original))
+	rel, err := filepath.Rel(rootReal, original)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("original model path escapes models root")
+	}
+	return original, nil
+}
+
+func writeDeletionManifest(stageDir string, manifest deletionManifest) error {
+	f, err := os.OpenFile(filepath.Join(stageDir, deletionManifestName), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	if err = json.NewEncoder(f).Encode(manifest); err == nil {
+		err = f.Sync()
+	}
+	if closeErr := f.Close(); err == nil {
+		err = closeErr
+	}
+	return err
+}
+
+func readDeletionManifest(stageDir string) (deletionManifest, error) {
+	path := filepath.Join(stageDir, deletionManifestName)
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 || info.Size() > 4096 {
+		return deletionManifest{}, errors.New("missing or unsafe deletion manifest")
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return deletionManifest{}, err
+	}
+	defer f.Close()
+	var manifest deletionManifest
+	decoder := json.NewDecoder(io.LimitReader(f, 4097))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(&manifest); err != nil || manifest.ID == "" || manifest.Original == "" {
+		return deletionManifest{}, errors.New("invalid deletion manifest")
+	}
+	if err = decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return deletionManifest{}, errors.New("invalid trailing deletion manifest data")
+	}
+	return manifest, nil
+}
+
 func (r *Registry) Delete(ctx context.Context, id string, files bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -260,7 +423,19 @@ func (r *Registry) Delete(ctx context.Context, id string, files bool) error {
 	if active > 0 || downloading > 0 {
 		return errors.New("refusing to delete a running or downloading model")
 	}
-	var quarantined, original string
+	var stageDir, staged, original, qroot string
+	restoreStage := func(cause error) error {
+		if staged == "" {
+			return cause
+		}
+		if restoreErr := os.Rename(staged, original); restoreErr != nil {
+			return fmt.Errorf("%w; restore quarantined model files: %v", cause, restoreErr)
+		}
+		if removeErr := os.RemoveAll(stageDir); removeErr != nil {
+			return fmt.Errorf("%w; remove deletion stage: %v", cause, removeErr)
+		}
+		return cause
+	}
 	if files {
 		if m.LocalPath == "" {
 			return errors.New("model has no managed files")
@@ -290,7 +465,7 @@ func (r *Registry) Delete(ctx context.Context, id string, files bool) error {
 		if st.Mode()&os.ModeSymlink != 0 {
 			return errors.New("refusing to delete symlink")
 		}
-		qroot := filepath.Join(rootReal, ".quarantine")
+		qroot = filepath.Join(rootReal, ".quarantine")
 		if er = os.Mkdir(qroot, 0700); er != nil && !errors.Is(er, os.ErrExist) {
 			return fmt.Errorf("create deletion quarantine: %w", er)
 		}
@@ -301,36 +476,37 @@ func (r *Registry) Delete(ctx context.Context, id string, files bool) error {
 		if er = os.Chmod(qroot, 0700); er != nil {
 			return fmt.Errorf("secure deletion quarantine: %w", er)
 		}
-		quarantined = filepath.Join(qroot, id+"-"+filepath.Base(safe))
-		if _, er = os.Lstat(quarantined); !errors.Is(er, os.ErrNotExist) {
+		stageDir = filepath.Join(qroot, id)
+		if er = os.Mkdir(stageDir, 0o700); er != nil {
 			return errors.New("model deletion quarantine target already exists")
 		}
 		original = safe
-		if er = os.Rename(original, quarantined); er != nil {
+		if er = writeDeletionManifest(stageDir, deletionManifest{ID: id, Original: original}); er != nil {
+			_ = os.RemoveAll(stageDir)
+			return fmt.Errorf("write model deletion manifest: %w", er)
+		}
+		staged = filepath.Join(stageDir, "files")
+		if er = os.Rename(original, staged); er != nil {
+			_ = os.RemoveAll(stageDir)
 			return fmt.Errorf("stage model files for deletion: %w", er)
 		}
 	}
 	res, err := tx.ExecContext(ctx, `DELETE FROM models WHERE id=?`, id)
 	if err != nil {
-		if quarantined != "" {
-			_ = os.Rename(quarantined, original)
-		}
-		return fmt.Errorf("delete model: %w", err)
+		return restoreStage(fmt.Errorf("delete model: %w", err))
 	}
 	n, _ := res.RowsAffected()
 	if n == 0 {
-		return sqlite.ErrNotFound
+		return restoreStage(sqlite.ErrNotFound)
 	}
 	if err = tx.Commit(); err != nil {
-		if quarantined != "" {
-			_ = os.Rename(quarantined, original)
-		}
-		return fmt.Errorf("commit model deletion: %w", err)
+		return restoreStage(fmt.Errorf("commit model deletion: %w", err))
 	}
-	if quarantined != "" {
-		if err = os.RemoveAll(quarantined); err != nil {
+	if stageDir != "" {
+		if err = os.RemoveAll(stageDir); err != nil {
 			return fmt.Errorf("model registration deleted; quarantined files remain: %w", err)
 		}
+		_ = os.Remove(qroot)
 	}
 	return nil
 }

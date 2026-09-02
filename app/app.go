@@ -110,11 +110,15 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 	switcher := ability_runtime.NewSwitchService(supervisor)
 	supervisor.SetHealthInterval(c.HealthInterval)
 	keys := ability_api_key.New(st)
+	registry := ability_model.New(st, c.ModelsDir)
+	if err = registry.ReconcileDeletionQuarantine(ctx); err != nil {
+		slog.Error("reconcile interrupted model deletion", "error", err)
+		return 1
+	}
 	downloads := ability_download.NewWithOptions(c.HFCLI, nil, c.MaxDownloadWorkers, 1000)
 	downloads.SetStore(st)
 	downloads.SetRoot(c.ModelsDir)
 	downloads.SetHFHome(c.HFHome)
-	registry := ability_model.New(st, c.ModelsDir)
 	switcher.SetModelResolver(func(ctx context.Context, id string) (ability_runtime.ModelTarget, error) {
 		model, resolveErr := registry.ResolveRuntimeModel(ctx, id)
 		if resolveErr != nil {
