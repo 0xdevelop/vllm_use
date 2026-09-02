@@ -14,9 +14,10 @@ import (
 )
 
 type fakeRunner struct {
-	cmd  *fakeCmd
-	name string
-	args []string
+	cmd   *fakeCmd
+	name  string
+	args  []string
+	calls int
 }
 
 func TestDownloadDestinationStaysInsideRoot(t *testing.T) {
@@ -41,9 +42,49 @@ func TestDownloadDestinationStaysInsideRoot(t *testing.T) {
 }
 
 func (f *fakeRunner) CommandContext(_ context.Context, n string, a ...string) Command {
+	f.calls++
 	f.name = n
 	f.args = append([]string(nil), a...)
 	return f.cmd
+}
+
+func TestDownloadRejectsAcceptanceWhenSQLitePersistenceFails(t *testing.T) {
+	root := t.TempDir()
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = store.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-1','huggingface','org/model',NULL,?,'model','org/model','',0,'registered',?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err = store.DB.Exec(`CREATE TRIGGER reject_model_download_state BEFORE UPDATE OF status ON models WHEN NEW.status='downloading' BEGIN SELECT RAISE(ABORT, 'forced persistence failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	runner := &fakeRunner{cmd: &fakeCmd{}}
+	downloader := New("hf", runner)
+	downloader.SetRoot(root)
+	downloader.SetStore(store)
+	_, err = downloader.DownloadModel(context.Background(), "job-1", "model-1", "")
+	if err == nil || !strings.Contains(err.Error(), "persist download acceptance") {
+		t.Fatalf("persistence failure = %v", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("host CLI invoked %d times after persistence failure", runner.calls)
+	}
+	if _, ok := downloader.Status("job-1"); ok {
+		t.Fatal("unpersisted download was published in memory")
+	}
+	var jobs int
+	if err = store.DB.QueryRow(`SELECT COUNT(*) FROM downloads WHERE id='job-1'`).Scan(&jobs); err != nil || jobs != 0 {
+		t.Fatalf("download acceptance was not rolled back: count=%d err=%v", jobs, err)
+	}
+	var status string
+	if err = store.DB.QueryRow(`SELECT status FROM models WHERE id='model-1'`).Scan(&status); err != nil || status != "registered" {
+		t.Fatalf("model state changed after rejected acceptance: status=%q err=%v", status, err)
+	}
 }
 
 type fakeCmd struct {
