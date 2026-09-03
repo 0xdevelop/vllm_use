@@ -7,8 +7,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 )
@@ -194,6 +196,61 @@ func (f *fakeCmd) StderrPipe() (io.ReadCloser, error) {
 }
 func (f *fakeCmd) Start() error { return nil }
 func (f *fakeCmd) Wait() error  { return f.wait }
+
+type waitSensitiveReader struct {
+	closed atomic.Bool
+	read   bool
+}
+
+func (r *waitSensitiveReader) Read(p []byte) (int, error) {
+	if r.read {
+		return 0, io.EOF
+	}
+	time.Sleep(20 * time.Millisecond)
+	if r.closed.Load() {
+		return 0, os.ErrClosed
+	}
+	r.read = true
+	return copy(p, "100%\n"), nil
+}
+
+func (r *waitSensitiveReader) Close() error {
+	r.closed.Store(true)
+	return nil
+}
+
+type waitSensitiveCommand struct{ stdout *waitSensitiveReader }
+
+func (c *waitSensitiveCommand) StdoutPipe() (io.ReadCloser, error) { return c.stdout, nil }
+func (*waitSensitiveCommand) StderrPipe() (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (*waitSensitiveCommand) Start() error  { return nil }
+func (c *waitSensitiveCommand) Wait() error { return c.stdout.Close() }
+
+type waitSensitiveRunner struct{ command *waitSensitiveCommand }
+
+func (r waitSensitiveRunner) CommandContext(context.Context, string, ...string) Command {
+	return r.command
+}
+
+func TestDownloadConsumesPipesBeforeWait(t *testing.T) {
+	command := &waitSensitiveCommand{stdout: &waitSensitiveReader{}}
+	d := New("hf", waitSensitiveRunner{command: command})
+	destination := filepath.Join(t.TempDir(), "model")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Download(context.Background(), "pipe-order", "org/model", destination, ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, d, "pipe-order", Succeeded)
+	job, _ := d.Status("pipe-order")
+	if job.Progress != 100 || len(job.Logs) != 1 || job.Logs[0] != "100%" {
+		t.Fatalf("pipe output was not consumed before Wait: %#v", job)
+	}
+}
+
 func TestDownloadStructuredArgsRedactionAndStates(t *testing.T) {
 	t.Setenv("HF_HOME", "/inherited/cache")
 	r := &fakeRunner{cmd: &fakeCmd{out: "50% token-secret\n100%\n"}}
@@ -240,6 +297,48 @@ func TestDownloadStructuredArgsRedactionAndStates(t *testing.T) {
 		}
 		time.Sleep(time.Millisecond)
 	}
+}
+
+func TestDownloadDrainsAndBoundsOversizedOutputLine(t *testing.T) {
+	secret := "token-secret"
+	oversized := strings.Repeat("x", maxDownloadLogLineBytes-3) + secret + strings.Repeat("界", maxDownloadLogLineBytes) + " 100%\n"
+	r := &fakeRunner{cmd: &fakeCmd{out: oversized}}
+	d := NewWithOptions("hf", r, 1, 10)
+	destination := filepath.Join(t.TempDir(), "model")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(destination, "weights"), []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Download(context.Background(), "large-log", "org/model", destination, secret); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, d, "large-log", Succeeded)
+	job, _ := d.Status("large-log")
+	if len(job.Logs) != 1 || !strings.HasSuffix(job.Logs[0], downloadLogTruncatedSuffix) {
+		t.Fatalf("oversized line was not retained as one bounded log entry: lengths=%v", logLengths(job.Logs))
+	}
+	if len(job.Logs[0]) > maxDownloadLogLineBytes+len(downloadLogTruncatedSuffix) {
+		t.Fatalf("bounded log line length = %d", len(job.Logs[0]))
+	}
+	if !utf8.ValidString(job.Logs[0]) {
+		t.Fatal("bounded log line split a UTF-8 sequence")
+	}
+	if strings.Contains(job.Logs[0], secret) || strings.HasSuffix(strings.TrimSuffix(job.Logs[0], downloadLogTruncatedSuffix), "tok") {
+		t.Fatal("secret crossing the truncation boundary leaked into the log")
+	}
+	if job.Progress != 100 {
+		t.Fatalf("progress at end of oversized line = %v", job.Progress)
+	}
+}
+
+func logLengths(logs []string) []int {
+	lengths := make([]int, len(logs))
+	for i := range logs {
+		lengths[i] = len(logs[i])
+	}
+	return lengths
 }
 
 func TestConfiguredHFHomeOverridesInheritedValue(t *testing.T) {
@@ -440,6 +539,19 @@ func TestTokenRequiresEnvironmentCapableRunner(t *testing.T) {
 	}
 	if len(d.List()) != 0 {
 		t.Fatal("unsafe request created a job")
+	}
+}
+
+func TestDownloadRejectsUnsafeTokenBeforeCreatingJob(t *testing.T) {
+	for _, token := range []string{"line\nbreak", strings.Repeat("x", 4097)} {
+		runner := &fakeRunner{cmd: &fakeCmd{}}
+		d := New("hf", runner)
+		if _, err := d.Download(context.Background(), "one", "org/model", "/models/m", token); err == nil || !strings.Contains(err.Error(), "invalid download token") {
+			t.Fatalf("unsafe token result = %v", err)
+		}
+		if runner.calls != 0 || len(d.List()) != 0 {
+			t.Fatalf("unsafe token reached runner or job registry: calls=%d jobs=%d", runner.calls, len(d.List()))
+		}
 	}
 }
 

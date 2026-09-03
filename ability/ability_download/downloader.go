@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 )
@@ -48,6 +49,9 @@ const (
 	Succeeded State = "succeeded"
 	Failed    State = "failed"
 	Canceled  State = "canceled"
+
+	maxDownloadLogLineBytes    = 64 << 10
+	downloadLogTruncatedSuffix = "… [truncated]"
 )
 
 type Job struct {
@@ -168,8 +172,11 @@ type Request struct {
 func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*Job, error) {
 	id, repo, dest, token := request.ID, request.Repository, request.Destination, request.Token
 	id = strings.TrimSpace(id)
-	if id == "" || len(id) > 128 || strings.ContainsAny(id, "\\/\x00\n\r\t") {
+	if id == "" || len(id) > 128 || strings.ContainsAny(id, "\\/\x00\n\r	") {
 		return nil, errors.New("invalid download id")
+	}
+	if len(token) > 4096 || strings.ContainsAny(token, "\x00\n\r") {
+		return nil, errors.New("invalid download token")
 	}
 	repo = strings.TrimSpace(repo)
 	revision := strings.TrimSpace(request.Revision)
@@ -326,11 +333,18 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 	go func() { pipeErrors <- d.consume(j, errout, token) }()
 	go func() {
 		defer d.wg.Done()
-		e := cmd.Wait()
+		var pipeErr error
 		for i := 0; i < 2; i++ {
-			if pe := <-pipeErrors; pe != nil && e == nil {
-				e = pe
+			if err := <-pipeErrors; err != nil && pipeErr == nil {
+				pipeErr = err
 			}
+		}
+		// StdoutPipe/StderrPipe require reads to complete before Wait; calling
+		// Wait first can close a still-buffered pipe and turn a successful CLI
+		// run into a spurious "file already closed" failure.
+		e := cmd.Wait()
+		if e == nil {
+			e = pipeErr
 		}
 		<-d.workers
 		if ctx.Err() != nil {
@@ -352,29 +366,75 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 var pct = regexp.MustCompile(`([0-9]{1,3}(?:\.[0-9]+)?)%`)
 
 func (d *Downloader) consume(j *Job, r io.Reader, secret string) error {
-	s := bufio.NewScanner(r)
-	for s.Scan() {
-		line := s.Text()
-		if secret != "" {
-			line = strings.ReplaceAll(line, secret, "[REDACTED]")
+	reader := bufio.NewReaderSize(r, 64<<10)
+	captureLimit := maxDownloadLogLineBytes + len(secret)
+	line := make([]byte, 0, min(captureLimit, 64<<10))
+	tail := make([]byte, 0, 256)
+	truncated := false
+	haveLine := false
+	for {
+		part, more, err := reader.ReadLine()
+		if err == nil || len(part) > 0 {
+			haveLine = true
 		}
-		d.mu.Lock()
-		j.Logs = append(j.Logs, line)
-		if len(j.Logs) > d.maxLogs {
-			j.Logs = append([]string(nil), j.Logs[len(j.Logs)-d.maxLogs:]...)
-		}
-		if m := pct.FindStringSubmatch(line); len(m) > 0 {
-			if v, e := strconv.ParseFloat(m[1], 64); e == nil && v >= 0 && v <= 100 {
-				j.Progress = v
+		if len(part) > 0 {
+			remaining := captureLimit - len(line)
+			if remaining > 0 {
+				take := min(remaining, len(part))
+				line = append(line, part[:take]...)
+				truncated = truncated || take < len(part)
+			} else {
+				truncated = true
+			}
+			tail = append(tail, part...)
+			if len(tail) > 256 {
+				tail = append(tail[:0], tail[len(tail)-256:]...)
 			}
 		}
-		d.mu.Unlock()
-		d.persist(j)
+		if !more && (haveLine || truncated) {
+			d.appendLogLine(j, string(line), string(tail), secret, truncated)
+			line = line[:0]
+			tail = tail[:0]
+			truncated = false
+			haveLine = false
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return errors.New("read download output: " + err.Error())
+		}
 	}
-	if err := s.Err(); err != nil {
-		return errors.New("read download output: " + err.Error())
+}
+
+func (d *Downloader) appendLogLine(j *Job, line, progressTail, secret string, truncated bool) {
+	if secret != "" {
+		line = strings.ReplaceAll(line, secret, "[REDACTED]")
 	}
-	return nil
+	line = strings.ToValidUTF8(line, "�")
+	if len(line) > maxDownloadLogLineBytes {
+		line = line[:maxDownloadLogLineBytes]
+		for len(line) > 0 && !utf8.ValidString(line) {
+			line = line[:len(line)-1]
+		}
+		truncated = true
+	}
+	if truncated {
+		line += downloadLogTruncatedSuffix
+	}
+	d.mu.Lock()
+	j.Logs = append(j.Logs, line)
+	if len(j.Logs) > d.maxLogs {
+		j.Logs = append([]string(nil), j.Logs[len(j.Logs)-d.maxLogs:]...)
+	}
+	matches := pct.FindAllStringSubmatch(progressTail, -1)
+	if len(matches) > 0 {
+		if v, err := strconv.ParseFloat(matches[len(matches)-1][1], 64); err == nil && v >= 0 && v <= 100 {
+			j.Progress = v
+		}
+	}
+	d.mu.Unlock()
+	d.persist(j)
 }
 func (d *Downloader) finish(j *Job, s State, e error) error {
 	localPath := ""
