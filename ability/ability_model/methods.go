@@ -2,7 +2,6 @@ package ability_model
 
 import (
 	"context"
-	"errors"
 
 	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
 )
@@ -15,9 +14,11 @@ const (
 	MethodDelete        = "models.delete"
 )
 
-var activeModel func() string
+type deletionGuard func(id, localPath string, remove func() error) error
 
-func SetupActiveModel(check func() string) { activeModel = check }
+var guardDeletion deletionGuard
+
+func SetupDeletionGuard(guard deletionGuard) { guardDeletion = guard }
 
 func LoadManagementMethods() {
 	add(MethodScan, "扫描模型目录", nil, nil, func(ctx context.Context, _ interface{}) (interface{}, error) {
@@ -60,10 +61,16 @@ func LoadManagementMethods() {
 		if err := api_supported_methods.DecodeArguments(input, &in); err != nil {
 			return nil, err
 		}
-		if activeModel != nil && activeModel() == in.ID {
-			return nil, errors.New("refusing to delete the running model")
+		model, err := registry().Get(ctx, in.ID)
+		if err != nil {
+			return nil, err
 		}
-		err := registry().Delete(ctx, in.ID, in.Files)
+		remove := func() error { return registry().Delete(ctx, in.ID, in.Files) }
+		if guardDeletion != nil {
+			err = guardDeletion(in.ID, model.LocalPath, remove)
+		} else {
+			err = remove()
+		}
 		return map[string]bool{"deleted": err == nil}, err
 	})
 }

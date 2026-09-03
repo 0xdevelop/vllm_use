@@ -129,7 +129,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 	gpuService := ability_gpu.New(nil)
 	ability_model.Setup(registry)
 	ability_gpu.Setup(gpuService)
-	ability_model.SetupActiveModel(switcher.Active)
+	ability_model.SetupDeletionGuard(switcher.GuardModelDeletion)
 	ability_download.Setup(downloads)
 	ability_runtime.Setup(supervisor, switcher)
 	ability_api_key.Setup(keys)

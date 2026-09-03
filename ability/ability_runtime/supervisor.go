@@ -296,10 +296,11 @@ func (s *Supervisor) State() State {
 }
 
 type SwitchService struct {
-	mu       sync.Mutex
-	s        *Supervisor
-	resolver ModelResolver
-	active   string
+	mu        sync.Mutex
+	s         *Supervisor
+	resolver  ModelResolver
+	active    string
+	modelPath string
 }
 
 func NewSwitchService(s *Supervisor) *SwitchService { return &SwitchService{s: s} }
@@ -346,10 +347,12 @@ func (x *SwitchService) Switch(ctx context.Context, id string, o Options, h stri
 		}
 	}
 	x.active = ""
+	x.modelPath = ""
 	if err = x.s.Start(ctx, o, h); err != nil {
 		return err
 	}
 	x.active = id
+	x.modelPath = canonical
 	return nil
 }
 
@@ -363,6 +366,7 @@ func (x *SwitchService) Start(ctx context.Context, o Options, h string) error {
 		return err
 	}
 	x.active = ""
+	x.modelPath = filepath.Clean(o.Model)
 	return nil
 }
 
@@ -375,8 +379,12 @@ func (x *SwitchService) Restart(ctx context.Context, o Options, h string) error 
 	defer x.mu.Unlock()
 	err := x.s.Restart(ctx, o, h)
 	status := x.s.State().Status
-	if err == nil || (status != Starting && status != Running) {
+	if err == nil {
 		x.active = ""
+		x.modelPath = filepath.Clean(o.Model)
+	} else if status != Starting && status != Running {
+		x.active = ""
+		x.modelPath = ""
 	}
 	return err
 }
@@ -387,6 +395,7 @@ func (x *SwitchService) Active() string {
 	st := x.s.State().Status
 	if st != Running && st != Starting {
 		x.active = ""
+		x.modelPath = ""
 	}
 	return x.active
 }
@@ -396,6 +405,25 @@ func (x *SwitchService) Stop(ctx context.Context) error {
 	e := x.s.Stop(ctx)
 	if e == nil {
 		x.active = ""
+		x.modelPath = ""
 	}
 	return e
+}
+
+// GuardModelDeletion serializes a model deletion with every runtime lifecycle
+// operation. Checking only Active() before deleting has a race: a switch can
+// resolve the model after the check and start it while its files are being
+// quarantined. The path check also protects a model launched through the
+// lower-level direct start/restart methods, which intentionally have no model
+// registry association.
+func (x *SwitchService) GuardModelDeletion(id, localPath string, remove func() error) error {
+	x.mu.Lock()
+	defer x.mu.Unlock()
+	state := x.s.State().Status
+	active := state == Starting || state == Running || state == Stopping
+	samePath := localPath != "" && x.modelPath != "" && filepath.Clean(localPath) == filepath.Clean(x.modelPath)
+	if active && (x.active == id || samePath) {
+		return errors.New("refusing to delete the running model")
+	}
+	return remove()
 }

@@ -280,3 +280,84 @@ func TestDirectRestartClearsRegisteredModelAssociation(t *testing.T) {
 		t.Fatalf("direct restart retained stale model association %q", got)
 	}
 }
+
+func TestModelDeletionGuardRejectsRegisteredAndDirectRuntimePaths(t *testing.T) {
+	s := NewSupervisor(script(t, `trap 'exit 0' TERM; while :; do sleep 1; done`), time.Second, time.Second)
+	o := readyOptions(t, s)
+	o.Model = ""
+	modelPath := filepath.Join(t.TempDir(), "managed-model")
+	x := NewSwitchService(s)
+	x.SetModelResolver(func(_ context.Context, id string) (ModelTarget, error) {
+		return ModelTarget{ID: id, LocalPath: modelPath, Status: "ready"}, nil
+	})
+	if err := x.Switch(context.Background(), "model-1", o, ""); err != nil {
+		t.Fatal(err)
+	}
+	deleted := false
+	if err := x.GuardModelDeletion("model-1", modelPath, func() error {
+		deleted = true
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "running model") {
+		t.Fatalf("registered running model deletion error = %v", err)
+	}
+	if deleted {
+		t.Fatal("registered running model deletion callback executed")
+	}
+	if err := x.Stop(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	direct := readyOptions(t, s)
+	direct.Model = modelPath
+	if err := x.Start(context.Background(), direct, ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = x.Stop(context.Background()) })
+	if got := x.Active(); got != "" {
+		t.Fatalf("direct runtime unexpectedly has registered association %q", got)
+	}
+	if err := x.GuardModelDeletion("model-1", modelPath, func() error {
+		deleted = true
+		return nil
+	}); err == nil || !strings.Contains(err.Error(), "running model") {
+		t.Fatalf("direct runtime model deletion error = %v", err)
+	}
+	if deleted {
+		t.Fatal("direct runtime model deletion callback executed")
+	}
+}
+
+func TestModelDeletionGuardSerializesRuntimeStart(t *testing.T) {
+	s := NewSupervisor(script(t, `trap 'exit 0' TERM; while :; do sleep 1; done`), time.Second, time.Second)
+	o := readyOptions(t, s)
+	modelPath := filepath.Join(t.TempDir(), "managed-model")
+	o.Model = modelPath
+	x := NewSwitchService(s)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	guardDone := make(chan error, 1)
+	go func() {
+		guardDone <- x.GuardModelDeletion("model-1", modelPath, func() error {
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+	startDone := make(chan error, 1)
+	go func() { startDone <- x.Start(context.Background(), o, "") }()
+	select {
+	case err := <-startDone:
+		t.Fatalf("runtime start crossed active deletion guard: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	if err := <-guardDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-startDone; err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = x.Stop(context.Background()) })
+}
