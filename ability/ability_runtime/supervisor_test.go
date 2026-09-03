@@ -7,12 +7,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func script(t *testing.T, body string) string {
@@ -112,8 +114,8 @@ func TestLargeLogLineAndIgnoredTERMRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	eventually(t, func() bool { return len(s.State().Logs) == 1 })
-	if got := len(s.State().Logs[0]); got != len(long) {
-		t.Fatalf("large log length %d", got)
+	if got := s.State().Logs[0]; len(got) > maxRuntimeLogLineBytes+len(runtimeLogTruncatedSuffix) || !strings.HasSuffix(got, runtimeLogTruncatedSuffix) {
+		t.Fatalf("large log was not bounded and marked: length=%d", len(got))
 	}
 	s.binary = script(t, `trap 'exit 0' TERM; while :; do sleep 1; done`)
 	if err := s.Restart(context.Background(), o, ""); err != nil {
@@ -125,6 +127,46 @@ func TestLargeLogLineAndIgnoredTERMRestart(t *testing.T) {
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestRuntimeLogsDrainAndBoundOversizedLines(t *testing.T) {
+	s := NewSupervisor("vllm", time.Second, time.Second)
+	cmd := &exec.Cmd{}
+	s.cmd = cmd
+	oversized := strings.Repeat("x", maxRuntimeLogLineBytes-1) + strings.Repeat("界", 2<<20) + "\nafter\n"
+
+	s.logs(cmd, strings.NewReader(oversized))
+
+	logs := s.State().Logs
+	if len(logs) != 2 {
+		t.Fatalf("logs = %d entries, want oversized line and following marker", len(logs))
+	}
+	if !strings.HasSuffix(logs[0], runtimeLogTruncatedSuffix) {
+		t.Fatalf("oversized line was not marked as truncated: length=%d", len(logs[0]))
+	}
+	if len(logs[0]) > maxRuntimeLogLineBytes+len(runtimeLogTruncatedSuffix) {
+		t.Fatalf("oversized log line length = %d", len(logs[0]))
+	}
+	if !utf8.ValidString(logs[0]) {
+		t.Fatal("bounded runtime log split a UTF-8 sequence")
+	}
+	if logs[1] != "after" {
+		t.Fatalf("line after oversized output = %q", logs[1])
+	}
+}
+
+func TestSupervisorDrainsOversizedProcessOutput(t *testing.T) {
+	binary := script(t, `dd if=/dev/zero bs=1048576 count=5 2>/dev/null | tr '\000' x; printf '\nafter\n'; trap 'exit 0' TERM; while :; do sleep 1; done`)
+	s := NewSupervisor(binary, time.Second, time.Second)
+	o := readyOptions(t, s)
+	if err := s.Start(context.Background(), o, ""); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Stop(context.Background()) })
+	eventually(t, func() bool {
+		logs := s.State().Logs
+		return len(logs) == 2 && strings.HasSuffix(logs[0], runtimeLogTruncatedSuffix) && logs[1] == "after"
+	})
 }
 
 func TestGPUDevicesUseCUDAVisibleDevices(t *testing.T) {

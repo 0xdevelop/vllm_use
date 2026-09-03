@@ -18,6 +18,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 type Status string
@@ -28,6 +29,9 @@ const (
 	Running  Status = "running"
 	Stopping Status = "stopping"
 	Failed   Status = "failed"
+
+	maxRuntimeLogLineBytes    = 64 << 10
+	runtimeLogTruncatedSuffix = "… [truncated]"
 )
 
 type State struct {
@@ -171,19 +175,57 @@ func (s *Supervisor) poll(ctx context.Context, cmd *exec.Cmd, url string) error 
 	}
 }
 func (s *Supervisor) logs(cmd *exec.Cmd, r io.Reader) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		s.mu.Lock()
-		if s.cmd != cmd {
-			s.mu.Unlock()
-			continue
+	reader := bufio.NewReaderSize(r, 64<<10)
+	line := make([]byte, 0, maxRuntimeLogLineBytes)
+	truncated := false
+	haveLine := false
+	for {
+		part, more, err := reader.ReadLine()
+		if err == nil || len(part) > 0 {
+			haveLine = true
 		}
-		s.state.Logs = append(s.state.Logs, sc.Text())
-		if len(s.state.Logs) > 1000 {
-			s.state.Logs = s.state.Logs[len(s.state.Logs)-1000:]
+		if len(part) > 0 {
+			remaining := maxRuntimeLogLineBytes - len(line)
+			if remaining > 0 {
+				take := min(remaining, len(part))
+				line = append(line, part[:take]...)
+				truncated = truncated || take < len(part)
+			} else {
+				truncated = true
+			}
 		}
-		s.mu.Unlock()
+		if !more && haveLine {
+			s.appendLog(cmd, string(line), truncated)
+			line = line[:0]
+			truncated = false
+			haveLine = false
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (s *Supervisor) appendLog(cmd *exec.Cmd, line string, truncated bool) {
+	line = strings.ToValidUTF8(line, "�")
+	if len(line) > maxRuntimeLogLineBytes {
+		line = line[:maxRuntimeLogLineBytes]
+		for len(line) > 0 && !utf8.ValidString(line) {
+			line = line[:len(line)-1]
+		}
+		truncated = true
+	}
+	if truncated {
+		line += runtimeLogTruncatedSuffix
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.cmd != cmd {
+		return
+	}
+	s.state.Logs = append(s.state.Logs, line)
+	if len(s.state.Logs) > 1000 {
+		s.state.Logs = append([]string(nil), s.state.Logs[len(s.state.Logs)-1000:]...)
 	}
 }
 func (s *Supervisor) wait(cmd *exec.Cmd) {
