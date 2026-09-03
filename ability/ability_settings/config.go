@@ -23,6 +23,7 @@ type Config struct {
 	ReadinessTimeout, ShutdownGrace                                           time.Duration
 	HealthInterval                                                            time.Duration
 	MaxDownloadWorkers                                                        int
+	MaxAuditRecords                                                           int
 	UpstreamAPIKey                                                            string
 	MCPAllowedOrigins                                                         []string
 }
@@ -52,6 +53,7 @@ func Default() Config {
 		ShutdownGrace:      envDuration("VLLM_USE_SHUTDOWN_GRACE", 10*time.Second, 0),
 		HealthInterval:     envDuration("VLLM_USE_HEALTH_INTERVAL", 200*time.Millisecond, -1),
 		MaxDownloadWorkers: envInt("VLLM_USE_MAX_DOWNLOAD_WORKERS", 2),
+		MaxAuditRecords:    envIntInvalid("VLLM_USE_MAX_AUDIT_RECORDS", 10_000, -1),
 	}
 }
 
@@ -72,13 +74,17 @@ func firstEnv(keys ...string) string {
 }
 
 func envInt(key string, fallback int) int {
+	return envIntInvalid(key, fallback, 0)
+}
+
+func envIntInvalid(key string, fallback, invalid int) int {
 	raw := os.Getenv(key)
 	if raw == "" {
 		return fallback
 	}
 	value, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0 // rejected by Config.Validate
+		return invalid // rejected by Config.Validate
 	}
 	return value
 }
@@ -132,6 +138,9 @@ func (c Config) Validate() error {
 	}
 	if c.MaxDownloadWorkers < 1 || c.MaxDownloadWorkers > 64 {
 		return errors.New("max download workers must be between 1 and 64")
+	}
+	if c.MaxAuditRecords < 0 || c.MaxAuditRecords > 1_000_000 {
+		return errors.New("max audit records must be between 0 and 1000000")
 	}
 	if c.HFHome != "" && !filepath.IsAbs(c.HFHome) {
 		return errors.New("HF home must be absolute")

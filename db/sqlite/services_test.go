@@ -61,3 +61,33 @@ func TestSettingsRuntimeConfigAndRequestsCRUD(t *testing.T) {
 		t.Fatalf("duplicate correlation IDs need distinct audit identities: %+v", recent)
 	}
 }
+
+func TestRecordRequestWithLimitBoundsAuditHistory(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+
+	for _, requestID := range []string{"req-1", "req-2", "req-3", "req-4", "req-5"} {
+		if err = s.RecordRequestWithLimit(ctx, APIRequest{RequestID: requestID, Method: "POST", Path: "/v1/responses", StatusCode: 200}, 3); err != nil {
+			t.Fatalf("record %s: %v", requestID, err)
+		}
+	}
+	recent, err := s.RecentRequests(ctx, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(recent) != 3 || recent[0].RequestID != "req-5" || recent[1].RequestID != "req-4" || recent[2].RequestID != "req-3" {
+		t.Fatalf("bounded audit history = %+v", recent)
+	}
+
+	if err = s.RecordRequestWithLimit(ctx, APIRequest{RequestID: "disabled", Method: "POST", Path: "/v1/responses", StatusCode: 200}, 0); err != nil {
+		t.Fatalf("disable audit recording: %v", err)
+	}
+	recent, err = s.RecentRequests(ctx, 10)
+	if err != nil || len(recent) != 3 || recent[0].RequestID != "req-5" {
+		t.Fatalf("disabled recording changed history: recent=%+v err=%v", recent, err)
+	}
+}

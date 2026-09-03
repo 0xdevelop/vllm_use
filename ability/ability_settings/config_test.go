@@ -11,7 +11,7 @@ import (
 
 func TestValidationAndLoopback(t *testing.T) {
 	d := t.TempDir()
-	c := Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", Upstream: "http://127.0.0.1:8000", ReadinessTimeout: time.Second, ShutdownGrace: time.Second, MaxDownloadWorkers: 1}
+	c := Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", Upstream: "http://127.0.0.1:8000", ReadinessTimeout: time.Second, ShutdownGrace: time.Second, MaxDownloadWorkers: 1, MaxAuditRecords: 100}
 	if e := c.Validate(); e != nil {
 		t.Fatal(e)
 	}
@@ -39,7 +39,7 @@ func TestValidationAndLoopback(t *testing.T) {
 
 func TestValidationRestrictsManagedVLLMUpstreamToLoopbackRoot(t *testing.T) {
 	d := t.TempDir()
-	base := Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", ReadinessTimeout: time.Second, ShutdownGrace: time.Second, MaxDownloadWorkers: 1}
+	base := Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", ReadinessTimeout: time.Second, ShutdownGrace: time.Second, MaxDownloadWorkers: 1, MaxAuditRecords: 100}
 	for _, upstream := range []string{
 		"http://127.0.0.1:8000",
 		"http://localhost:8000",
@@ -83,6 +83,7 @@ func TestDefaultReadsEnvironmentAndDerivesDataPaths(t *testing.T) {
 	t.Setenv("VLLM_USE_HF_CLI", "/opt/hf/bin/hf")
 	t.Setenv("VLLM_USE_HF_HOME", hfHome)
 	t.Setenv("VLLM_USE_MAX_DOWNLOAD_WORKERS", "7")
+	t.Setenv("VLLM_USE_MAX_AUDIT_RECORDS", "2500")
 	t.Setenv("VLLM_USE_UPSTREAM", "http://127.0.0.1:19000")
 	t.Setenv("VLLM_USE_READINESS_TIMEOUT", "45s")
 	t.Setenv("VLLM_USE_SHUTDOWN_GRACE", "4s")
@@ -92,7 +93,7 @@ func TestDefaultReadsEnvironmentAndDerivesDataPaths(t *testing.T) {
 	if c.Listen != "127.0.0.1:19090" || c.DataDir != dataDir || c.Database != filepath.Join(dataDir, "vllm-use.db") || c.ModelsDir != filepath.Join(dataDir, "models") {
 		t.Fatalf("path defaults %#v", c)
 	}
-	if c.VLLMBinary != "/opt/vllm/bin/vllm" || c.HFCLI != "/opt/hf/bin/hf" || c.HFHome != hfHome || c.MaxDownloadWorkers != 7 || c.Upstream != "http://127.0.0.1:19000" {
+	if c.VLLMBinary != "/opt/vllm/bin/vllm" || c.HFCLI != "/opt/hf/bin/hf" || c.HFHome != hfHome || c.MaxDownloadWorkers != 7 || c.MaxAuditRecords != 2500 || c.Upstream != "http://127.0.0.1:19000" {
 		t.Fatalf("defaults %#v", c)
 	}
 	if c.ReadinessTimeout != 45*time.Second || c.ShutdownGrace != 4*time.Second || c.HealthInterval != 350*time.Millisecond {
@@ -122,12 +123,13 @@ func TestDefaultHonorsExplicitDatabaseAndModelsEnvironment(t *testing.T) {
 func TestDefaultMakesInvalidNumericEnvironmentFailValidation(t *testing.T) {
 	for _, tc := range []struct{ key, value string }{
 		{"VLLM_USE_MAX_DOWNLOAD_WORKERS", "many"},
+		{"VLLM_USE_MAX_AUDIT_RECORDS", "many"},
 		{"VLLM_USE_READINESS_TIMEOUT", "soon"},
 		{"VLLM_USE_SHUTDOWN_GRACE", "later"},
 		{"VLLM_USE_HEALTH_INTERVAL", "often"},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
-			for _, key := range []string{"VLLM_USE_MAX_DOWNLOAD_WORKERS", "VLLM_USE_READINESS_TIMEOUT", "VLLM_USE_SHUTDOWN_GRACE", "VLLM_USE_HEALTH_INTERVAL"} {
+			for _, key := range []string{"VLLM_USE_MAX_DOWNLOAD_WORKERS", "VLLM_USE_MAX_AUDIT_RECORDS", "VLLM_USE_READINESS_TIMEOUT", "VLLM_USE_SHUTDOWN_GRACE", "VLLM_USE_HEALTH_INTERVAL"} {
 				t.Setenv(key, "")
 			}
 			t.Setenv(tc.key, tc.value)

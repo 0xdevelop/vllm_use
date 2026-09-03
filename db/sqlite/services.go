@@ -154,14 +154,42 @@ type APIRequest struct {
 	CreatedAt  time.Time `json:"created_at"`
 }
 
+const DefaultMaxAuditRecords = 10_000
+
 func (s *Store) RecordRequest(ctx context.Context, v APIRequest) error {
+	return s.RecordRequestWithLimit(ctx, v, DefaultMaxAuditRecords)
+}
+
+// RecordRequestWithLimit appends one audit event and atomically removes the
+// oldest events beyond maxRecords. A zero limit disables new audit writes but
+// deliberately leaves existing operator history intact.
+func (s *Store) RecordRequestWithLimit(ctx context.Context, v APIRequest, maxRecords int) error {
+	if maxRecords < 0 {
+		return errors.New("maximum audit records must not be negative")
+	}
+	if maxRecords == 0 {
+		return nil
+	}
 	idBytes := make([]byte, 16)
 	if _, e := rand.Read(idBytes); e != nil {
 		return fmt.Errorf("generate request audit id: %w", e)
 	}
 	id := hex.EncodeToString(idBytes)
-	_, e := s.DB.ExecContext(ctx, `INSERT INTO api_requests(id,request_id,method,path,model,status_code,duration_ms,key_id,remote_addr,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, v.RequestID, v.Method, v.Path, v.Model, v.StatusCode, v.DurationMS, null(v.KeyID), v.RemoteAddr, time.Now().UTC().Format(time.RFC3339Nano))
-	return e
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin request audit: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err = tx.ExecContext(ctx, `INSERT INTO api_requests(id,request_id,method,path,model,status_code,duration_ms,key_id,remote_addr,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`, id, v.RequestID, v.Method, v.Path, v.Model, v.StatusCode, v.DurationMS, null(v.KeyID), v.RemoteAddr, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("record request audit: %w", err)
+	}
+	if _, err = tx.ExecContext(ctx, `DELETE FROM api_requests WHERE id IN (SELECT id FROM api_requests ORDER BY created_at DESC,id DESC LIMIT -1 OFFSET ?)`, maxRecords); err != nil {
+		return fmt.Errorf("prune request audits: %w", err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit request audit: %w", err)
+	}
+	return nil
 }
 func (s *Store) RecentRequests(ctx context.Context, limit int) ([]APIRequest, error) {
 	if limit < 1 || limit > 500 {

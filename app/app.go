@@ -43,6 +43,7 @@ func ParseConfig(args []string, stderr io.Writer) (ability_settings.Config, erro
 	flags.StringVar(&c.HFCLI, "hf", c.HFCLI, "Hugging Face CLI executable")
 	flags.StringVar(&c.HFHome, "hf-home", c.HFHome, "Hugging Face cache/config directory (preserves inherited HF_HOME when unset)")
 	flags.IntVar(&c.MaxDownloadWorkers, "max-download-workers", c.MaxDownloadWorkers, "maximum concurrent Hugging Face downloads")
+	flags.IntVar(&c.MaxAuditRecords, "max-audit-records", c.MaxAuditRecords, "maximum retained inference audit records (0 disables new audit writes)")
 	flags.StringVar(&c.Upstream, "upstream", c.Upstream, "vLLM upstream URL")
 	flags.StringVar(&c.UpstreamAPIKey, "upstream-api-key", c.UpstreamAPIKey, "vLLM upstream credential (prefer VLLM_USE_UPSTREAM_API_KEY to avoid process argv exposure)")
 	flags.StringVar(&c.AdminToken, "admin-token", c.AdminToken, "admin token (required for management API access)")
@@ -154,7 +155,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 		}
 		return api_gateway.Principal{KeyID: verified.ID}, nil
 	}), api_gateway.Options{UpstreamKey: c.UpstreamAPIKey, Record: func(ctx context.Context, metadata api_gateway.RequestMetadata) {
-		_ = st.RecordRequest(ctx, sqlite.APIRequest{RequestID: metadata.RequestID, Method: metadata.Method, Path: metadata.Path, Model: metadata.Model, KeyID: metadata.KeyID, StatusCode: metadata.StatusCode, DurationMS: metadata.Duration.Milliseconds(), RemoteAddr: metadata.RemoteAddr})
+		_ = st.RecordRequestWithLimit(ctx, sqlite.APIRequest{RequestID: metadata.RequestID, Method: metadata.Method, Path: metadata.Path, Model: metadata.Model, KeyID: metadata.KeyID, StatusCode: metadata.StatusCode, DurationMS: metadata.Duration.Milliseconds(), RemoteAddr: metadata.RemoteAddr}, c.MaxAuditRecords)
 	}})
 	mux := http.NewServeMux()
 	mux.Handle("/v1/", proxy)

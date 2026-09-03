@@ -14,8 +14,9 @@ func TestParseConfigPreservesEnvironmentAndAppliesFlags(t *testing.T) {
 	t.Setenv("VLLM_USE_HF_HOME", filepath.Join(t.TempDir(), "environment-hf"))
 	t.Setenv("VLLM_USE_UPSTREAM", "http://127.0.0.1:18000")
 	t.Setenv("VLLM_USE_READINESS_TIMEOUT", "40s")
+	t.Setenv("VLLM_USE_MAX_AUDIT_RECORDS", "2000")
 
-	cfg, err := ParseConfig([]string{"--listen", "127.0.0.1:19090", "--admin-token", "flag-token", "--upstream", "http://127.0.0.1:28000", "--readiness-timeout", "50s", "--shutdown-grace", "5s", "--health-interval", "500ms", "--mcp-allowed-origins", "https://one.example, https://two.example"}, &bytes.Buffer{})
+	cfg, err := ParseConfig([]string{"--listen", "127.0.0.1:19090", "--admin-token", "flag-token", "--upstream", "http://127.0.0.1:28000", "--readiness-timeout", "50s", "--shutdown-grace", "5s", "--health-interval", "500ms", "--max-audit-records", "3000", "--mcp-allowed-origins", "https://one.example, https://two.example"}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +26,7 @@ func TestParseConfigPreservesEnvironmentAndAppliesFlags(t *testing.T) {
 	if cfg.HFHome != os.Getenv("VLLM_USE_HF_HOME") {
 		t.Fatalf("environment default lost: got %q", cfg.HFHome)
 	}
-	if cfg.Upstream != "http://127.0.0.1:28000" || cfg.ReadinessTimeout != 50*time.Second || cfg.ShutdownGrace != 5*time.Second || cfg.HealthInterval != 500*time.Millisecond {
+	if cfg.Upstream != "http://127.0.0.1:28000" || cfg.ReadinessTimeout != 50*time.Second || cfg.ShutdownGrace != 5*time.Second || cfg.HealthInterval != 500*time.Millisecond || cfg.MaxAuditRecords != 3000 {
 		t.Fatalf("runtime flag overrides not applied: %+v", cfg)
 	}
 	wantOrigins := []string{"https://one.example", "https://two.example"}
