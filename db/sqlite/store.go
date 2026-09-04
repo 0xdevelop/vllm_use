@@ -19,12 +19,7 @@ func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
-	if err != nil {
-		return nil, err
-	}
-	_ = f.Close()
-	if err = os.Chmod(path, 0600); err != nil {
+	if err := secureDatabaseFile(path); err != nil {
 		return nil, err
 	}
 	dsn := (&url.URL{Scheme: "file", Path: path, RawQuery: "_pragma=foreign_keys%281%29&_pragma=journal_mode%28WAL%29&_pragma=busy_timeout%285000%29"}).String()
@@ -41,6 +36,52 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// secureDatabaseFile refuses links and non-regular filesystem objects before
+// handing the path to SQLite. Following a configured symlink here could expose
+// or modify an unrelated database, while chmod on that path would also mutate
+// the link target. Existing regular databases are retained and tightened.
+func secureDatabaseFile(path string) error {
+	pathInfo, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		f, createErr := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0600)
+		if createErr != nil {
+			return fmt.Errorf("create database file: %w", createErr)
+		}
+		if closeErr := f.Close(); closeErr != nil {
+			_ = os.Remove(path)
+			return fmt.Errorf("close new database file: %w", closeErr)
+		}
+		pathInfo, err = os.Lstat(path)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect database file: %w", err)
+	}
+	if !pathInfo.Mode().IsRegular() {
+		return errors.New("database path must be a regular file and must not be a symlink")
+	}
+
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("open database file securely: %w", err)
+	}
+	defer f.Close()
+	openedInfo, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect opened database file: %w", err)
+	}
+	if !openedInfo.Mode().IsRegular() || !os.SameFile(pathInfo, openedInfo) {
+		return errors.New("database file changed while being opened")
+	}
+	if err = f.Chmod(0600); err != nil {
+		return fmt.Errorf("secure database file permissions: %w", err)
+	}
+	currentInfo, err := os.Lstat(path)
+	if err != nil || !currentInfo.Mode().IsRegular() || !os.SameFile(openedInfo, currentInfo) {
+		return errors.New("database file changed while being secured")
+	}
+	return nil
 }
 
 func (s *Store) Close() error { return s.DB.Close() }

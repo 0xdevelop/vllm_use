@@ -29,6 +29,72 @@ func TestOpenMigratesAndSecures(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsUnsafeDatabasePaths(t *testing.T) {
+	t.Run("symlink", func(t *testing.T) {
+		root := t.TempDir()
+		target := filepath.Join(root, "target.db")
+		const original = "operator-owned-content"
+		if err := os.WriteFile(target, []byte(original), 0644); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(root, "state.db")
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+		if store, err := Open(link); err == nil {
+			_ = store.Close()
+			t.Fatal("database symlink was accepted")
+		}
+		contents, err := os.ReadFile(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(contents) != original {
+			t.Fatalf("symlink target was modified: %q", contents)
+		}
+		info, err := os.Stat(target)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0644 {
+			t.Fatalf("symlink target permissions changed to %o", info.Mode().Perm())
+		}
+	})
+
+	t.Run("directory", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "database")
+		if err := os.Mkdir(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if store, err := Open(path); err == nil {
+			_ = store.Close()
+			t.Fatal("database directory was accepted")
+		}
+	})
+}
+
+func TestOpenTightensExistingDatabasePermissions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "existing.db")
+	if err := os.WriteFile(path, nil, 0666); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0666); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("mode %o", info.Mode().Perm())
+	}
+}
+
 func seedMigrationHistory(t *testing.T, path string, versions ...int) {
 	t.Helper()
 	db, err := sql.Open("sqlite", "file:"+path)

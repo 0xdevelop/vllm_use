@@ -38,7 +38,7 @@ MCP 还要求 `Mcp-Protocol-Version: 2026-07-28`，并使用 Go 标准库跨源�
 - `ability_api_key`：创建、列出、启停和删除带 scope 的 API key。key secret 固定为 `vu_` 加 48 位字母数字，随机字符使用无模偏差采样；认证先做固定成本的格式校验，再查询 SQLite 并执行 scrypt，异常长度或字符不会进入昂贵校验路径。
 - `ability_settings`：保存、删除非敏感设置与读取最近 Gateway 请求元数据。HTTP Web Admin 和 MCP 都通过统一注册方法删除设置；token、password、credential、API key 等敏感键会被拒绝写入，凭据只能来自环境变量或 CLI flags，升级时会清理旧版 SQLite 中的敏感设置行。
 
-SQLite 是持久化真相源。下载进程和 vLLM runtime 由宿主机进程组管理；已受理的下载不依赖 HTTP/MCP 请求 context，服务退出时会停止接收请求、取消并等待下载状态落库后再关闭 SQLite。不存在 MySQL Worker 或通用异步任务框架。
+SQLite 是持久化真相源。启动时数据库路径必须是普通文件且不能是符号链接，既有数据库会收紧为 `0600`，防止错误配置跟随链接修改无关文件。下载进程和 vLLM runtime 由宿主机进程组管理；已受理的下载不依赖 HTTP/MCP 请求 context，服务退出时会停止接收请求、取消并等待下载状态落库后再关闭 SQLite。不存在 MySQL Worker 或通用异步任务框架。
 
 ## 推理数据面
 
