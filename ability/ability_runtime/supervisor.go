@@ -19,6 +19,8 @@ import (
 	"syscall"
 	"time"
 	"unicode/utf8"
+
+	"github.com/0xdevelop/vllm-use/internal/processenv"
 )
 
 type Status string
@@ -88,7 +90,7 @@ func (s *Supervisor) start(ctx context.Context, o Options, healthURL string) err
 	}
 	runctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(runctx, s.binary, args...)
-	cmd.Env = os.Environ()
+	cmd.Env = processenv.WithoutManagerCredentials(os.Environ())
 	if len(o.GPUDevices) > 0 {
 		devices := make([]string, len(o.GPUDevices))
 		for i, device := range o.GPUDevices {

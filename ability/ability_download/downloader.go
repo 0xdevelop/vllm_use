@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/0xdevelop/vllm-use/db/sqlite"
+	"github.com/0xdevelop/vllm-use/internal/processenv"
 )
 
 type Command interface {
@@ -296,7 +297,7 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 	}
 	cmd := d.runner.CommandContext(ctx, d.cli, args...)
 	if x, ok := cmd.(interface{ SetEnv([]string) }); ok {
-		env := os.Environ()
+		env := processenv.WithoutManagerCredentials(os.Environ())
 		if token != "" {
 			env = setEnvironment(env, "HF_TOKEN", token)
 		}

@@ -169,9 +169,12 @@ func TestSupervisorDrainsOversizedProcessOutput(t *testing.T) {
 	})
 }
 
-func TestGPUDevicesUseCUDAVisibleDevices(t *testing.T) {
-	output := filepath.Join(t.TempDir(), "cuda.txt")
-	s := NewSupervisor(script(t, `printf '%s' "$CUDA_VISIBLE_DEVICES" > "`+output+`"; trap 'exit 0' TERM; while :; do sleep 1; done`), time.Second, time.Second)
+func TestRuntimeChildEnvironmentExcludesManagerCredentials(t *testing.T) {
+	t.Setenv("VLLM_USE_ADMIN_TOKEN", "admin-secret")
+	t.Setenv("VLLM_USE_UPSTREAM_API_KEY", "upstream-secret")
+	t.Setenv("VLLM_USE_TEST_MARKER", "preserved")
+	output := filepath.Join(t.TempDir(), "env.txt")
+	s := NewSupervisor(script(t, `env > "`+output+`"; trap 'exit 0' TERM; while :; do sleep 1; done`), time.Second, time.Second)
 	o := readyOptions(t, s)
 	o.GPUDevices = []int{2, 5}
 	if err := s.Start(context.Background(), o, ""); err != nil {
@@ -179,8 +182,19 @@ func TestGPUDevicesUseCUDAVisibleDevices(t *testing.T) {
 	}
 	eventually(t, func() bool {
 		b, err := os.ReadFile(output)
-		return err == nil && string(b) == "2,5"
+		if err != nil {
+			return false
+		}
+		env := string(b)
+		return strings.Contains(env, "CUDA_VISIBLE_DEVICES=2,5\n") && strings.Contains(env, "VLLM_USE_TEST_MARKER=preserved\n")
 	})
+	env, err := os.ReadFile(output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(env), "VLLM_USE_ADMIN_TOKEN=") || strings.Contains(string(env), "VLLM_USE_UPSTREAM_API_KEY=") {
+		t.Fatal("manager credential name leaked to runtime child")
+	}
 	if err := s.Stop(context.Background()); err != nil {
 		t.Fatal(err)
 	}

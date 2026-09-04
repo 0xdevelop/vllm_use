@@ -253,6 +253,9 @@ func TestDownloadConsumesPipesBeforeWait(t *testing.T) {
 
 func TestDownloadStructuredArgsRedactionAndStates(t *testing.T) {
 	t.Setenv("HF_HOME", "/inherited/cache")
+	t.Setenv("VLLM_USE_ADMIN_TOKEN", "admin-secret")
+	t.Setenv("VLLM_USE_UPSTREAM_API_KEY", "upstream-secret")
+	t.Setenv("VLLM_USE_TEST_MARKER", "preserved")
 	r := &fakeRunner{cmd: &fakeCmd{out: "50% token-secret\n100%\n"}}
 	d := New("hf", r)
 	destination := filepath.Join(t.TempDir(), "model")
@@ -278,6 +281,12 @@ func TestDownloadStructuredArgsRedactionAndStates(t *testing.T) {
 			}
 			if !contains(r.cmd.env, "HF_HOME=/inherited/cache") {
 				t.Fatalf("inherited HF_HOME lost: %#v", r.cmd.env)
+			}
+			if !contains(r.cmd.env, "VLLM_USE_TEST_MARKER=preserved") {
+				t.Fatalf("non-sensitive environment lost: %#v", r.cmd.env)
+			}
+			if containsKey(r.cmd.env, "VLLM_USE_ADMIN_TOKEN") || containsKey(r.cmd.env, "VLLM_USE_UPSTREAM_API_KEY") {
+				t.Fatal("manager credential name leaked to download child")
 			}
 			break
 		}
@@ -511,6 +520,16 @@ func waitForState(t *testing.T, d *Downloader, id string, want State) {
 func contains(values []string, want string) bool {
 	for _, value := range values {
 		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func containsKey(values []string, key string) bool {
+	prefix := key + "="
+	for _, value := range values {
+		if strings.HasPrefix(value, prefix) {
 			return true
 		}
 	}
