@@ -140,6 +140,106 @@ func TestDefaultMakesInvalidNumericEnvironmentFailValidation(t *testing.T) {
 	}
 }
 
+func TestPrepareRejectsUnsafeManagedDirectories(t *testing.T) {
+	for _, field := range []string{"data", "models", "hf_home"} {
+		t.Run(field+"_symlink", func(t *testing.T) {
+			root := t.TempDir()
+			target := filepath.Join(root, "operator-owned")
+			if err := os.Mkdir(target, 0755); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(target, "marker")
+			if err := os.WriteFile(marker, []byte("unchanged"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(root, "configured")
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+
+			dataDir := filepath.Join(root, "data")
+			modelsDir := filepath.Join(root, "models")
+			hfHome := ""
+			switch field {
+			case "data":
+				dataDir = link
+			case "models":
+				modelsDir = link
+			case "hf_home":
+				hfHome = link
+			}
+			c := Config{
+				Listen: "127.0.0.1:8080", DataDir: dataDir,
+				Database: filepath.Join(root, "state.db"), ModelsDir: modelsDir,
+				VLLMBinary: "vllm", HFCLI: "hf", HFHome: hfHome,
+				Upstream: "http://127.0.0.1:8000", ReadinessTimeout: time.Second,
+				ShutdownGrace: time.Second, MaxDownloadWorkers: 1, MaxAuditRecords: 100,
+			}
+			if err := c.Prepare(); err == nil {
+				t.Fatal("managed directory symlink was accepted")
+			}
+			info, err := os.Stat(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0755 {
+				t.Fatalf("symlink target permissions changed to %o", info.Mode().Perm())
+			}
+			contents, err := os.ReadFile(marker)
+			if err != nil || string(contents) != "unchanged" {
+				t.Fatalf("symlink target marker changed: contents=%q err=%v", contents, err)
+			}
+		})
+	}
+
+	t.Run("regular_file", func(t *testing.T) {
+		root := t.TempDir()
+		models := filepath.Join(root, "models")
+		if err := os.WriteFile(models, []byte("not-a-directory"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		c := Config{
+			Listen: "127.0.0.1:8080", DataDir: filepath.Join(root, "data"),
+			Database: filepath.Join(root, "state.db"), ModelsDir: models,
+			VLLMBinary: "vllm", HFCLI: "hf", Upstream: "http://127.0.0.1:8000",
+			ReadinessTimeout: time.Second, ShutdownGrace: time.Second,
+			MaxDownloadWorkers: 1, MaxAuditRecords: 100,
+		}
+		if err := c.Prepare(); err == nil {
+			t.Fatal("regular file was accepted as a managed directory")
+		}
+	})
+}
+
+func TestPrepareCreatesAndTightensManagedDirectories(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, "data")
+	modelsDir := filepath.Join(root, "models")
+	hfHome := filepath.Join(root, "hf-home")
+	if err := os.Mkdir(modelsDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	c := Config{
+		Listen: "127.0.0.1:8080", DataDir: dataDir,
+		Database: filepath.Join(root, "state.db"), ModelsDir: modelsDir,
+		VLLMBinary: "vllm", HFCLI: "hf", HFHome: hfHome,
+		Upstream: "http://127.0.0.1:8000", ReadinessTimeout: time.Second,
+		ShutdownGrace: time.Second, MaxDownloadWorkers: 1, MaxAuditRecords: 100,
+	}
+	if err := c.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{dataDir, modelsDir, hfHome} {
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !info.IsDir() || info.Mode().Perm() != 0700 {
+			t.Fatalf("managed path %q mode=%v, want private directory", path, info.Mode())
+		}
+	}
+}
+
 func TestEnsureAdminTokenCreatesPrivateCredentialAndReusesIt(t *testing.T) {
 	dir := t.TempDir()
 	c := Config{DataDir: dir}

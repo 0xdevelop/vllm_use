@@ -277,12 +277,51 @@ func (c Config) Prepare() error {
 		directories = append(directories, c.HFHome)
 	}
 	for _, d := range directories {
-		if err := os.MkdirAll(d, 0700); err != nil {
-			return err
+		if err := secureManagedDirectory(d); err != nil {
+			return fmt.Errorf("prepare managed directory %q: %w", d, err)
 		}
-		if err := os.Chmod(d, 0700); err != nil {
-			return err
+	}
+	return nil
+}
+
+// secureManagedDirectory rejects a configured final path that is a symlink or
+// another non-directory object. Permissions are changed through an opened
+// descriptor after identity checks, so rejection never chmods a symlink target.
+// As with database opening, a downstream pathname user still leaves a narrow
+// replacement window when the parent is writable by an attacker.
+func secureManagedDirectory(path string) error {
+	pathInfo, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		if err = os.MkdirAll(path, 0700); err != nil {
+			return fmt.Errorf("create: %w", err)
 		}
+		pathInfo, err = os.Lstat(path)
+	}
+	if err != nil {
+		return fmt.Errorf("inspect: %w", err)
+	}
+	if !pathInfo.IsDir() || pathInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("path must be a directory and must not be a symlink")
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open securely: %w", err)
+	}
+	defer f.Close()
+	openedInfo, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("inspect opened directory: %w", err)
+	}
+	if !openedInfo.IsDir() || !os.SameFile(pathInfo, openedInfo) {
+		return errors.New("directory changed while being opened")
+	}
+	if err = f.Chmod(0700); err != nil {
+		return fmt.Errorf("secure permissions: %w", err)
+	}
+	currentInfo, err := os.Lstat(path)
+	if err != nil || !currentInfo.IsDir() || !os.SameFile(openedInfo, currentInfo) {
+		return errors.New("directory changed while being secured")
 	}
 	return nil
 }
