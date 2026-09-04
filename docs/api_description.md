@@ -35,7 +35,7 @@ MCP 还要求 `Mcp-Protocol-Version: 2026-07-28`，并使用 Go 标准库跨源�
 - `ability_download`：通过宿主机 Hugging Face CLI 下载、重试、取消、查询日志。HTTP/MCP 只能携带任务 `id`、已登记 Hugging Face 模型的 `model_id` 和一次性 token；服务从 SQLite 读取 repository/revision，并把目标目录固定派生为 `<models-dir>/<model_id>`，客户端不能注入仓库或主机路径。一次性 token 有严格长度/控制字符边界，只经子进程环境传递。服务会持续排空 CLI 的 stdout/stderr，超长单行按 UTF-8 边界截断后再持久化，避免异常输出阻塞下载进程或无界膨胀日志。服务会先在同一 SQLite 事务中持久化任务和模型的 `downloading` 状态，再启动宿主机 CLI；任一持久化步骤失败都会回滚且不会发布内存任务或启动下载进程。CLI 退出成功后还会校验目标是模型根目录内真实可读的目录并计量文件大小，校验通过才在同一事务中将任务及对应模型记录转为 `succeeded` / `ready`，避免数据库故障留下成功任务与仍在下载模型的分裂状态；终态持久化失败会显式标记内存任务失败，并使服务关闭返回错误，而不是假报持久化成功。
 - `ability_runtime`：构造受约束参数，监督唯一宿主机 vLLM 进程并切换活动模型。`runtime.switch` 以 SQLite 中的 `model_id` 为权威，只允许切换到状态为 `ready` 且具有受管本地路径的模型；启动前会重新确认登记路径仍是模型根目录内的真实目录，拒绝缺失、普通文件、被替换的符号链接或逃逸路径，调用方不能用 `options.model` 绕过模型登记状态。切换会接管并停止此前通过底层 `runtime.start` 直接启动的进程；重启会先完整校验替换参数，非法配置不会停止健康进程。运行状态只在当前进程确由模型注册表启动时返回对应 `active_model_id`，直接启动或重启不会沿用过期关联。Web Admin 的启动/切换入口只选择这些就绪模型。常用 vLLM flags 使用类型化字段，`extra_args` 仅接受结构化的合法 flag 名和值，不能通过值注入另一项 `--flag` 或覆盖保留参数。监督器持续排空 stdout/stderr；每个日志单行最多保留 64 KiB 并按 UTF-8 边界截断，超限时明确标记，后续输出仍可被读取，避免异常长行堵塞 vLLM 进程或无界占用管理服务内存。
 - `ability_gpu`：读取真实 `nvidia-smi` 状态。
-- `ability_api_key`：创建、列出、启停和删除带 scope 的 API key。
+- `ability_api_key`：创建、列出、启停和删除带 scope 的 API key。key secret 固定为 `vu_` 加 48 位字母数字，随机字符使用无模偏差采样；认证先做固定成本的格式校验，再查询 SQLite 并执行 scrypt，异常长度或字符不会进入昂贵校验路径。
 - `ability_settings`：保存、删除非敏感设置与读取最近 Gateway 请求元数据。HTTP Web Admin 和 MCP 都通过统一注册方法删除设置；token、password、credential、API key 等敏感键会被拒绝写入，凭据只能来自环境变量或 CLI flags，升级时会清理旧版 SQLite 中的敏感设置行。
 
 SQLite 是持久化真相源。下载进程和 vLLM runtime 由宿主机进程组管理；已受理的下载不依赖 HTTP/MCP 请求 context，服务退出时会停止接收请求、取消并等待下载状态落库后再关闭 SQLite。不存在 MySQL Worker 或通用异步任务框架。

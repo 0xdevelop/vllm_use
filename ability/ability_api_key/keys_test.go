@@ -2,9 +2,12 @@ package ability_api_key
 
 import (
 	"context"
-	"github.com/0xdevelop/vllm-use/db/sqlite"
+	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/0xdevelop/vllm-use/db/sqlite"
 )
 
 func TestKeyShownAndVerifiedByScope(t *testing.T) {
@@ -65,5 +68,44 @@ func TestKeyCRUDAndAdminScopeSemantics(t *testing.T) {
 	}
 	if e = m.Delete(context.Background(), k.ID); e != nil {
 		t.Fatal(e)
+	}
+}
+
+func TestVerifyRejectsMalformedSecretsBeforeDatabaseWork(t *testing.T) {
+	s, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(s)
+	_, secret, err := m.Create(context.Background(), []string{"inference"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(secret) != 51 || !strings.HasPrefix(secret, "vu_") {
+		t.Fatalf("generated secret has unexpected format: length=%d", len(secret))
+	}
+	for _, r := range secret[3:] {
+		if !strings.ContainsRune(alphabet, r) {
+			t.Fatalf("generated secret contains invalid character %q", r)
+		}
+	}
+
+	// Closing the store proves malformed credentials are rejected at the cheap
+	// parser boundary, before a SQLite lookup or expensive scrypt derivation.
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	malformed := []string{
+		"vu_short",
+		secret + "x",
+		secret[:len(secret)-1],
+		secret[:11] + "_" + secret[12:],
+		"xx_" + secret[3:],
+		secret[:11] + strings.Repeat("a", 1<<20),
+	}
+	for _, candidate := range malformed {
+		if _, err = m.Verify(context.Background(), candidate, "inference"); !errors.Is(err, ErrInvalidKey) {
+			t.Fatalf("malformed credential length=%d returned %v, want ErrInvalidKey", len(candidate), err)
+		}
 	}
 }

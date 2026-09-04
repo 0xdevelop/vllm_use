@@ -16,7 +16,12 @@ import (
 	"golang.org/x/crypto/scrypt"
 )
 
-const alphabet = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+const (
+	alphabet            = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+	secretPrefix        = "vu_"
+	secretRandomLength  = 48
+	displayedPrefixSize = 11
+)
 
 var ErrInvalidKey = errors.New("invalid API key")
 var ErrInsufficientScope = errors.New("insufficient scope")
@@ -34,13 +39,25 @@ type Manager struct{ s *sqlite.Store }
 
 func New(s *sqlite.Store) *Manager { return &Manager{s} }
 func random(n int) (string, error) {
-	r := make([]byte, n)
-	if _, err := rand.Read(r); err != nil {
-		return "", fmt.Errorf("random bytes: %w", err)
-	}
 	b := make([]byte, n)
-	for i := range b {
-		b[i] = alphabet[int(r[i])%len(alphabet)]
+	randomBytes := make([]byte, 32)
+	// Discard the high tail that cannot be divided evenly by len(alphabet),
+	// avoiding modulo bias in credentials and public identifiers.
+	limit := byte(256 - (256 % len(alphabet)))
+	for written := 0; written < n; {
+		if _, err := rand.Read(randomBytes); err != nil {
+			return "", fmt.Errorf("random bytes: %w", err)
+		}
+		for _, value := range randomBytes {
+			if value >= limit {
+				continue
+			}
+			b[written] = alphabet[int(value)%len(alphabet)]
+			written++
+			if written == n {
+				break
+			}
+		}
 	}
 	return string(b), nil
 }
@@ -65,11 +82,11 @@ func (m *Manager) CreateNamed(ctx context.Context, name string, scopes []string)
 		return Key{}, "", errors.New("key name too long")
 	}
 	for tries := 0; tries < 5; tries++ {
-		tail, e := random(48)
+		tail, e := random(secretRandomLength)
 		if e != nil {
 			return Key{}, "", e
 		}
-		secret := "vu_" + tail
+		secret := secretPrefix + tail
 		salt := make([]byte, 16)
 		if _, e = rand.Read(salt); e != nil {
 			return Key{}, "", fmt.Errorf("generate salt: %w", e)
@@ -83,7 +100,7 @@ func (m *Manager) CreateNamed(ctx context.Context, name string, scopes []string)
 			return Key{}, "", e
 		}
 		now := time.Now().UTC()
-		k := Key{ID: kid, Name: name, Prefix: secret[:11], Enabled: true, Scopes: scopes, CreatedAt: now}
+		k := Key{ID: kid, Name: name, Prefix: secret[:displayedPrefixSize], Enabled: true, Scopes: scopes, CreatedAt: now}
 		_, e = m.s.DB.ExecContext(ctx, `INSERT INTO api_keys(id,prefix,salt,hash,enabled,scopes,created_at,last_used_at,name) VALUES(?,?,?,?,?,?,?,NULL,?)`, k.ID, k.Prefix, salt, h, 1, strings.Join(scopes, ","), now.Format(time.RFC3339Nano), name)
 		if e == nil {
 			return k, secret, nil
@@ -114,10 +131,10 @@ func normalizeScopes(in []string) []string {
 	return out
 }
 func (m *Manager) Verify(ctx context.Context, secret, need string) (*Key, error) {
-	if len(secret) < 11 {
+	if !validSecret(secret) {
 		return nil, ErrInvalidKey
 	}
-	rows, e := m.s.DB.QueryContext(ctx, `SELECT id,name,prefix,salt,hash,enabled,scopes,created_at,last_used_at FROM api_keys WHERE prefix=?`, secret[:11])
+	rows, e := m.s.DB.QueryContext(ctx, `SELECT id,name,prefix,salt,hash,enabled,scopes,created_at,last_used_at FROM api_keys WHERE prefix=?`, secret[:displayedPrefixSize])
 	if e != nil {
 		return nil, fmt.Errorf("lookup API key: %w", e)
 	}
@@ -164,6 +181,17 @@ func (m *Manager) Verify(ctx context.Context, secret, need string) (*Key, error)
 		return nil, e
 	}
 	return nil, ErrInvalidKey
+}
+func validSecret(secret string) bool {
+	if len(secret) != len(secretPrefix)+secretRandomLength || !strings.HasPrefix(secret, secretPrefix) {
+		return false
+	}
+	for i := len(secretPrefix); i < len(secret); i++ {
+		if !strings.ContainsRune(alphabet, rune(secret[i])) {
+			return false
+		}
+	}
+	return true
 }
 func has(v []string, x string) bool {
 	for _, s := range v {
