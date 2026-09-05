@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/csv"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 
 	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
+	"github.com/0xdevelop/vllm-use/internal/processenv"
 )
 
 const MethodList = "gpu.list"
@@ -49,7 +52,9 @@ type Runner interface {
 type runner struct{}
 
 func (runner) Output(c context.Context, n string, a ...string) ([]byte, error) {
-	return exec.CommandContext(c, n, a...).Output()
+	cmd := exec.CommandContext(c, n, a...)
+	cmd.Env = processenv.WithoutManagerCredentials(os.Environ())
+	return cmd.Output()
 }
 
 type NVIDIA struct{ r Runner }
@@ -66,7 +71,7 @@ func (n *NVIDIA) List(ctx context.Context) ([]GPU, error) {
 		if errors.Is(e, exec.ErrNotFound) {
 			return []GPU{}, nil
 		}
-		return []GPU{}, nil
+		return nil, fmt.Errorf("query NVIDIA GPUs: %w", e)
 	}
 	rows, e := csv.NewReader(strings.NewReader(string(b))).ReadAll()
 	if e != nil {
