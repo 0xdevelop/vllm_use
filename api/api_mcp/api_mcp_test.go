@@ -156,6 +156,43 @@ func TestMCPStatelessHTTPUsesProtocol20260728(t *testing.T) {
 	}
 }
 
+func TestMCPRejectsMissingOrUnsupportedProtocolVersion(t *testing.T) {
+	ability.LoadAbilityAPIMethods()
+	handler, err := Handler(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"jsonrpc":"2.0","id":"version","method":"tools/call","params":{"name":"test","arguments":{}}}`
+	for _, version := range []string{"", "2025-11-25", " 2026-07-28 "} {
+		t.Run(version, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("Accept", "application/json, text/event-stream")
+			if version != "" {
+				request.Header.Set("Mcp-Protocol-Version", version)
+			}
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("version %q returned %d, want %d; body=%s", version, response.Code, http.StatusBadRequest, response.Body.String())
+			}
+			if response.Header().Get("Mcp-Protocol-Version") != mcpProtocolVersion {
+				t.Fatalf("supported protocol header = %q", response.Header().Get("Mcp-Protocol-Version"))
+			}
+			if response.Header().Get("Content-Type") != "application/json" {
+				t.Fatalf("content type = %q", response.Header().Get("Content-Type"))
+			}
+			var payload map[string]string
+			if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("invalid JSON error: %v; body=%s", err, response.Body.String())
+			}
+			if payload["error"] != "unsupported MCP protocol version" {
+				t.Fatalf("unexpected error payload: %#v", payload)
+			}
+		})
+	}
+}
+
 func TestMCPTrustedOriginsAreExplicit(t *testing.T) {
 	ability.LoadAbilityAPIMethods()
 	body := `{"jsonrpc":"2.0","id":"origin","method":"tools/call","params":{"name":"test","arguments":{},"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"origin-test","version":"1.0.0"},"io.modelcontextprotocol/clientCapabilities":{"extensions":{}}}}}`

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/0xdevelop/vllm-use/api/api_common"
 	"github.com/0xdevelop/vllm-use/api/api_executer"
 	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
 	"github.com/0xdevelop/vllm-use/config"
@@ -39,7 +38,10 @@ func Handler(trustedOrigins []string) (http.Handler, error) {
 	protectedHandler := crossOriginProtection.Handler(handler)
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		if request.Header.Get("Mcp-Protocol-Version") != mcpProtocolVersion {
-			api_common.HomeHandler(writer, request)
+			writer.Header().Set("Content-Type", "application/json")
+			writer.Header().Set("Mcp-Protocol-Version", mcpProtocolVersion)
+			writer.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(writer).Encode(map[string]string{"error": "unsupported MCP protocol version"})
 			return
 		}
 		protectedHandler.ServeHTTP(writer, request)

@@ -38,7 +38,7 @@ go run . --listen 127.0.0.1:8080
 - `/`：React Web Admin
 - `/healthz`：进程健康检查
 - `/api/*`：受保护的管理 HTTP Adapter
-- `/mcp`：受保护的 stateless Streamable HTTP MCP
+- `/mcp`：受保护的 stateless Streamable HTTP MCP（请求必须精确携带 `Mcp-Protocol-Version: 2026-07-28`，否则返回 400 并声明受支持版本）
 - `/v1/*`：受保护的 OpenAI/Anthropic 兼容推理 Gateway
 
 服务直接调用宿主机 `vllm`、`hf` 和 `nvidia-smi`，不使用 Docker。缺少这些程序时不会伪造运行、下载或 GPU 结果。下载 token 只经 Hugging Face 子进程环境传递且受长度/控制字符校验；管理 token 与 Gateway 上游凭据会从 vLLM/Hugging Face 子进程环境中剥离，避免无关宿主进程继承控制面 secret。API key 使用固定的 `vu_` 加 48 位字母数字格式，随机字符采用无模偏差采样，认证会在 SQLite 查询和 scrypt 前拒绝异常长度或字符，避免畸形凭据放大认证成本。服务会持续排空 `hf` 与 vLLM 的 stdout/stderr，并按 UTF-8 边界截断超长单行，避免异常 CLI 输出卡死进程、撑大内存或无界占用 SQLite。删除模型文件采用同文件系统隔离后再提交 SQLite 的流程；若进程在删除中途退出，下次启动会依据数据库真相恢复未提交删除或清理已提交删除，不会把未知隔离内容当作可删除垃圾。
