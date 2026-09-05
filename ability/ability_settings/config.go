@@ -26,6 +26,9 @@ type Config struct {
 	MaxAuditRecords                                                           int
 	UpstreamAPIKey                                                            string
 	MCPAllowedOrigins                                                         []string
+	ModelAliases                                                              map[string]string
+	modelAliasesRaw                                                           string
+	modelAliasesErr                                                           error
 }
 
 func Default() Config {
@@ -37,7 +40,7 @@ func Default() Config {
 		database = filepath.Join(d, "vllm-use.db")
 	}
 	models := envOr("VLLM_USE_MODELS_DIR", filepath.Join(d, "models"))
-	return Config{
+	c := Config{
 		Listen:             envOr("VLLM_USE_LISTEN", "127.0.0.1:8080"),
 		DataDir:            d,
 		Database:           database,
@@ -55,6 +58,8 @@ func Default() Config {
 		MaxDownloadWorkers: envInt("VLLM_USE_MAX_DOWNLOAD_WORKERS", 2),
 		MaxAuditRecords:    envIntInvalid("VLLM_USE_MAX_AUDIT_RECORDS", 10_000, -1),
 	}
+	_ = c.SetModelAliases(os.Getenv("VLLM_USE_MODEL_ALIASES"))
+	return c
 }
 
 func envOr(key, fallback string) string {
@@ -111,7 +116,78 @@ func splitList(s string) []string {
 	return out
 }
 
+// SetModelAliases parses a comma-separated alias=upstream-model mapping. The
+// raw value is retained so flag parsing can preserve environment defaults and
+// let an explicit CLI value replace an invalid environment value.
+func (c *Config) SetModelAliases(raw string) error {
+	c.modelAliasesRaw = raw
+	c.ModelAliases, c.modelAliasesErr = ParseModelAliases(raw)
+	return c.modelAliasesErr
+}
+
+func (c Config) ModelAliasesRaw() string { return c.modelAliasesRaw }
+
+func ParseModelAliases(raw string) (map[string]string, error) {
+	aliases := map[string]string{}
+	if strings.TrimSpace(raw) == "" {
+		return aliases, nil
+	}
+	if len(raw) > 64*1024 {
+		return nil, errors.New("model aliases exceed 64 KiB")
+	}
+	for _, pair := range strings.Split(raw, ",") {
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid model alias %q; expected alias=upstream-model", strings.TrimSpace(pair))
+		}
+		alias, target := strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		if err := validateModelName(alias); err != nil {
+			return nil, fmt.Errorf("invalid model alias %q: %w", alias, err)
+		}
+		if err := validateModelName(target); err != nil {
+			return nil, fmt.Errorf("invalid upstream model for alias %q: %w", alias, err)
+		}
+		if _, exists := aliases[alias]; exists {
+			return nil, fmt.Errorf("duplicate model alias %q", alias)
+		}
+		aliases[alias] = target
+		if len(aliases) > 128 {
+			return nil, errors.New("model aliases exceed 128 entries")
+		}
+	}
+	return aliases, nil
+}
+
+func validateModelName(value string) error {
+	if value == "" {
+		return errors.New("name is required")
+	}
+	if len(value) > 512 {
+		return errors.New("name exceeds 512 bytes")
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return errors.New("name contains control characters")
+		}
+	}
+	return nil
+}
+
 func (c Config) Validate() error {
+	if c.modelAliasesErr != nil {
+		return c.modelAliasesErr
+	}
+	if len(c.ModelAliases) > 128 {
+		return errors.New("model aliases exceed 128 entries")
+	}
+	for alias, target := range c.ModelAliases {
+		if err := validateModelName(alias); err != nil {
+			return fmt.Errorf("invalid model alias %q: %w", alias, err)
+		}
+		if err := validateModelName(target); err != nil {
+			return fmt.Errorf("invalid upstream model for alias %q: %w", alias, err)
+		}
+	}
 	if c.DataDir == "" || c.Database == "" || c.ModelsDir == "" {
 		return errors.New("data, database, and models paths are required")
 	}

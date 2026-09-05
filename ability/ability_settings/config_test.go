@@ -89,6 +89,7 @@ func TestDefaultReadsEnvironmentAndDerivesDataPaths(t *testing.T) {
 	t.Setenv("VLLM_USE_SHUTDOWN_GRACE", "4s")
 	t.Setenv("VLLM_USE_HEALTH_INTERVAL", "350ms")
 	t.Setenv("VLLM_USE_MCP_ALLOWED_ORIGINS", "https://one.example, https://two.example")
+	t.Setenv("VLLM_USE_MODEL_ALIASES", "chat=org/chat, embed = org/embed")
 	c := Default()
 	if c.Listen != "127.0.0.1:19090" || c.DataDir != dataDir || c.Database != filepath.Join(dataDir, "vllm-use.db") || c.ModelsDir != filepath.Join(dataDir, "models") {
 		t.Fatalf("path defaults %#v", c)
@@ -102,9 +103,30 @@ func TestDefaultReadsEnvironmentAndDerivesDataPaths(t *testing.T) {
 	if !reflect.DeepEqual(c.MCPAllowedOrigins, []string{"https://one.example", "https://two.example"}) {
 		t.Fatalf("origins %#v", c.MCPAllowedOrigins)
 	}
+	if !reflect.DeepEqual(c.ModelAliases, map[string]string{"chat": "org/chat", "embed": "org/embed"}) {
+		t.Fatalf("model aliases %#v", c.ModelAliases)
+	}
 	c.HFHome = "relative"
 	if err := c.Validate(); err == nil {
 		t.Fatal("relative HF home accepted")
+	}
+}
+
+func TestValidationRejectsUnsafeModelAliases(t *testing.T) {
+	d := t.TempDir()
+	base := Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", Upstream: "http://127.0.0.1:8000", ReadinessTimeout: time.Second, ShutdownGrace: time.Second, MaxDownloadWorkers: 1, MaxAuditRecords: 100}
+	for name, aliases := range map[string]map[string]string{
+		"empty alias":  {"": "org/model"},
+		"empty target": {"chat": ""},
+		"control":      {"chat\n": "org/model"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := base
+			c.ModelAliases = aliases
+			if err := c.Validate(); err == nil {
+				t.Fatalf("unsafe aliases %#v accepted", aliases)
+			}
+		})
 	}
 }
 
@@ -137,6 +159,13 @@ func TestDefaultMakesInvalidNumericEnvironmentFailValidation(t *testing.T) {
 				t.Fatalf("invalid %s=%q accepted", tc.key, tc.value)
 			}
 		})
+	}
+}
+
+func TestDefaultMakesInvalidModelAliasEnvironmentFailValidation(t *testing.T) {
+	t.Setenv("VLLM_USE_MODEL_ALIASES", "chat=one,chat=two")
+	if err := Default().Validate(); err == nil {
+		t.Fatal("invalid model alias environment accepted")
 	}
 }
 

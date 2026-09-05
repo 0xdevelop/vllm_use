@@ -46,6 +46,8 @@ func ParseConfig(args []string, stderr io.Writer) (ability_settings.Config, erro
 	flags.IntVar(&c.MaxAuditRecords, "max-audit-records", c.MaxAuditRecords, "maximum retained inference audit records (0 disables new audit writes)")
 	flags.StringVar(&c.Upstream, "upstream", c.Upstream, "vLLM upstream URL")
 	flags.StringVar(&c.UpstreamAPIKey, "upstream-api-key", c.UpstreamAPIKey, "vLLM upstream credential (prefer VLLM_USE_UPSTREAM_API_KEY to avoid process argv exposure)")
+	modelAliases := c.ModelAliasesRaw()
+	flags.StringVar(&modelAliases, "model-aliases", modelAliases, "comma-separated alias=upstream-model mappings")
 	flags.StringVar(&c.AdminToken, "admin-token", c.AdminToken, "admin token (required for management API access)")
 	flags.DurationVar(&c.ReadinessTimeout, "readiness-timeout", c.ReadinessTimeout, "maximum time to wait for vLLM readiness")
 	flags.DurationVar(&c.ShutdownGrace, "shutdown-grace", c.ShutdownGrace, "grace period before force-stopping vLLM")
@@ -59,6 +61,9 @@ func ParseConfig(args []string, stderr io.Writer) (ability_settings.Config, erro
 		return ability_settings.Config{}, fmt.Errorf("unexpected positional arguments: %s", strings.Join(flags.Args(), " "))
 	}
 	c.MCPAllowedOrigins = splitList(mcpOrigins)
+	if err := c.SetModelAliases(modelAliases); err != nil {
+		return ability_settings.Config{}, err
+	}
 	visited := map[string]bool{}
 	flags.Visit(func(f *flag.Flag) { visited[f.Name] = true })
 	if visited["data-dir"] {
@@ -154,7 +159,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 			return api_gateway.Principal{}, verifyErr
 		}
 		return api_gateway.Principal{KeyID: verified.ID}, nil
-	}), api_gateway.Options{UpstreamKey: c.UpstreamAPIKey, Record: func(ctx context.Context, metadata api_gateway.RequestMetadata) {
+	}), api_gateway.Options{UpstreamKey: c.UpstreamAPIKey, Aliases: c.ModelAliases, Record: func(ctx context.Context, metadata api_gateway.RequestMetadata) {
 		_ = st.RecordRequestWithLimit(ctx, sqlite.APIRequest{RequestID: metadata.RequestID, Method: metadata.Method, Path: metadata.Path, Model: metadata.Model, KeyID: metadata.KeyID, StatusCode: metadata.StatusCode, DurationMS: metadata.Duration.Milliseconds(), RemoteAddr: metadata.RemoteAddr}, c.MaxAuditRecords)
 	}})
 	mux := http.NewServeMux()

@@ -15,8 +15,9 @@ func TestParseConfigPreservesEnvironmentAndAppliesFlags(t *testing.T) {
 	t.Setenv("VLLM_USE_UPSTREAM", "http://127.0.0.1:18000")
 	t.Setenv("VLLM_USE_READINESS_TIMEOUT", "40s")
 	t.Setenv("VLLM_USE_MAX_AUDIT_RECORDS", "2000")
+	t.Setenv("VLLM_USE_MODEL_ALIASES", "env-chat=org/env-chat")
 
-	cfg, err := ParseConfig([]string{"--listen", "127.0.0.1:19090", "--admin-token", "flag-token", "--upstream", "http://127.0.0.1:28000", "--readiness-timeout", "50s", "--shutdown-grace", "5s", "--health-interval", "500ms", "--max-audit-records", "3000", "--mcp-allowed-origins", "https://one.example, https://two.example"}, &bytes.Buffer{})
+	cfg, err := ParseConfig([]string{"--listen", "127.0.0.1:19090", "--admin-token", "flag-token", "--upstream", "http://127.0.0.1:28000", "--readiness-timeout", "50s", "--shutdown-grace", "5s", "--health-interval", "500ms", "--max-audit-records", "3000", "--model-aliases", "chat=org/production-chat,embed=org/embedding", "--mcp-allowed-origins", "https://one.example, https://two.example"}, &bytes.Buffer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,6 +33,20 @@ func TestParseConfigPreservesEnvironmentAndAppliesFlags(t *testing.T) {
 	wantOrigins := []string{"https://one.example", "https://two.example"}
 	if !reflect.DeepEqual(cfg.MCPAllowedOrigins, wantOrigins) {
 		t.Fatalf("origins = %#v, want %#v", cfg.MCPAllowedOrigins, wantOrigins)
+	}
+	wantAliases := map[string]string{"chat": "org/production-chat", "embed": "org/embedding"}
+	if !reflect.DeepEqual(cfg.ModelAliases, wantAliases) {
+		t.Fatalf("aliases = %#v, want %#v", cfg.ModelAliases, wantAliases)
+	}
+}
+
+func TestParseConfigRejectsMalformedModelAliases(t *testing.T) {
+	for _, value := range []string{"missing-target=", "=missing-alias", "missing-separator", "chat=one,chat=two", "chat=line\nbreak"} {
+		t.Run(value, func(t *testing.T) {
+			if _, err := ParseConfig([]string{"--model-aliases", value}, &bytes.Buffer{}); err == nil {
+				t.Fatalf("malformed aliases %q accepted", value)
+			}
+		})
 	}
 }
 

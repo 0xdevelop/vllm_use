@@ -46,7 +46,7 @@ SQLite 是持久化真相源。启动时数据库路径必须是普通文件且�
 
 - OpenAI Chat Completions、Completions、Responses、Embeddings 和 Models 端点。
 - Anthropic Messages 与 token counting 兼容端点。
-- SSE 流式透传、请求取消传播、模型 alias 重写（重写时保留大整数等 JSON 数值的原始精度）、可选上游凭据注入。所有 POST 推理请求统一限制为 16 MiB，不能通过省略或伪装 `Content-Type` 绕过。
+- SSE 流式透传、请求取消传播、模型 alias 重写与可选上游凭据注入。alias 由 `VLLM_USE_MODEL_ALIASES` / `--model-aliases` 以逗号分隔的 `alias=upstream-model` 配置，并从应用组合根传入真实 Gateway；重写保留大整数等 JSON 数值的原始精度，审计记录客户端别名。重复、空白、控制字符或超过边界的映射会在启动时失败。所有 POST 推理请求统一限制为 16 MiB，不能通过省略或伪装 `Content-Type` 绕过。
 - 只记录非敏感且有长度上限的请求元数据，并以 API key ID（不含 secret）标记已认证请求，便于审计和撤销分析；每条记录有服务端生成的唯一 `audit_id`，客户端 `X-Request-ID` 仅作为可重复的关联字段，超过 128 字节或含非可见 ASCII 时会替换为服务端 ID，重复值不会覆盖、丢弃或混淆审计事件；模型名等审计字段按 UTF-8 边界截断但不会改写原推理请求；客户端 Authorization/X-API-Key 不转发给 upstream；审计历史由 `VLLM_USE_MAX_AUDIT_RECORDS` / `--max-audit-records` 限制（默认 10000），每次写入与淘汰最旧记录在同一 SQLite 事务内完成，设为 `0` 可停止新增记录而不删除已有历史；服务优雅退出时会在关闭 SQLite 前等待已接收的审计写入完成。
 
 Gateway 不执行业务管理 Ability，也不伪造推理结果。upstream 不可用时返回明确的 502。
