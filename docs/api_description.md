@@ -36,7 +36,7 @@ MCP 还要求精确的 `Mcp-Protocol-Version: 2026-07-28`，缺失、旧版或�
 - `ability_runtime`：构造受约束参数，监督唯一宿主机 vLLM 进程并切换活动模型。`runtime.switch` 以 SQLite 中的 `model_id` 为权威，只允许切换到状态为 `ready` 且具有受管本地路径的模型；启动前会重新确认登记路径仍是模型根目录内的真实目录，拒绝缺失、普通文件、被替换的符号链接或逃逸路径，调用方不能用 `options.model` 绕过模型登记状态。切换会接管并停止此前通过底层 `runtime.start` 直接启动的进程；重启会先完整校验替换参数，非法配置不会停止健康进程。运行状态只在当前进程确由模型注册表启动时返回对应 `active_model_id`，直接启动或重启不会沿用过期关联。Web Admin 的启动/切换入口只选择这些就绪模型。常用 vLLM flags 使用类型化字段，`extra_args` 仅接受结构化的合法 flag 名和值，不能通过值注入另一项 `--flag` 或覆盖保留参数。vLLM 子进程继承运行所需的普通宿主环境，但不会继承管理 token 或 Gateway 上游凭据。监督器持续排空 stdout/stderr；每个日志单行最多保留 64 KiB 并按 UTF-8 边界截断，超限时明确标记，后续输出仍可被读取，避免异常长行堵塞 vLLM 进程或无界占用管理服务内存。
 - `ability_gpu`：读取真实 `nvidia-smi` 状态。
 - `ability_api_key`：创建、列出、启停和删除带 scope 的 API key。key secret 固定为 `vu_` 加 48 位字母数字，随机字符使用无模偏差采样；认证先做固定成本的格式校验，再查询 SQLite 并执行 scrypt，异常长度或字符不会进入昂贵校验路径。
-- `ability_settings`：保存、删除非敏感设置与读取最近 Gateway 请求元数据。HTTP Web Admin 和 MCP 都通过统一注册方法删除设置；token、password、credential、API key 等敏感键会被拒绝写入，凭据只能来自环境变量或 CLI flags，升级时会清理旧版 SQLite 中的敏感设置行。
+- `ability_settings`：保存、删除非敏感设置与读取最近 Gateway 请求元数据。HTTP Web Admin 和 MCP 都通过统一注册方法删除设置；token、password、credential、API key 等敏感键会在忽略点、横线、下划线、斜线等分隔符后识别并拒绝写入，凭据只能来自环境变量或 CLI flags，升级时会清理旧版 SQLite 中的敏感设置行。
 
 SQLite 是持久化真相源。启动时数据库路径必须是普通文件且不能是符号链接，既有数据库会收紧为 `0600`，防止错误配置跟随链接修改无关文件。数据、模型及显式 Hugging Face cache 路径也必须是真实目录而非符号链接，并在目录身份校验后通过已打开的描述符收紧为 `0700`；这避免拒绝恶意或误配路径时跟随链接修改运维人员目录。下载进程和 vLLM runtime 由宿主机进程组管理；已受理的下载不依赖 HTTP/MCP 请求 context，服务退出时会停止接收请求、取消并等待下载状态落库后再关闭 SQLite。`vllm`、`hf` 与 `nvidia-smi` 子进程都不会继承管理 token 或 Gateway 上游凭据；仅当 `nvidia-smi` 不存在时 GPU 查询降级为空列表，其他执行故障会作为错误返回。不存在 MySQL Worker 或通用异步任务框架。
 

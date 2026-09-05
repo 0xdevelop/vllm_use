@@ -35,6 +35,9 @@ func TestSettingsRuntimeConfigAndRequestsCRUD(t *testing.T) {
 	for _, sensitive := range []Setting{
 		{Key: "hf_token", Value: "secret"},
 		{Key: "upstream_api_key", Value: "secret"},
+		{Key: "upstream-api-key", Value: "secret"},
+		{Key: "oauth.client-secret", Value: "secret"},
+		{Key: "private/key", Value: "secret"},
 		{Key: "database.password", Value: "secret"},
 	} {
 		if err = s.PutSettings(ctx, []Setting{sensitive}); !errors.Is(err, ErrSensitiveSetting) {

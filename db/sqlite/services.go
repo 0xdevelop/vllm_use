@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 )
 
 type Setting struct {
@@ -20,7 +21,18 @@ type Setting struct {
 var ErrSensitiveSetting = errors.New("sensitive settings must be supplied through environment variables or CLI flags")
 
 var sensitiveSettingFragments = []string{
-	"token", "secret", "password", "credential", "api_key", "apikey", "authorization", "private_key",
+	"token", "secret", "password", "credential", "apikey", "authorization", "privatekey",
+}
+
+func normalizedSettingKey(key string) string {
+	var normalized strings.Builder
+	normalized.Grow(len(key))
+	for _, r := range key {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			normalized.WriteRune(unicode.ToLower(r))
+		}
+	}
+	return normalized.String()
 }
 
 func validateSetting(v *Setting) error {
@@ -34,7 +46,9 @@ func validateSetting(v *Setting) error {
 	if len(v.Value) > 64*1024 {
 		return errors.New("setting value exceeds 64 KiB")
 	}
-	key := strings.ToLower(v.Key)
+	// Compare a separator-free form so cosmetic spelling cannot turn an
+	// API-key/credential field into a persistable non-sensitive setting.
+	key := normalizedSettingKey(v.Key)
 	for _, fragment := range sensitiveSettingFragments {
 		if strings.Contains(key, fragment) {
 			return ErrSensitiveSetting

@@ -167,7 +167,9 @@ func TestOpenUpgradesExistingSchema(t *testing.T) {
 	if _, err = db.Exec(`INSERT INTO settings(key,value,secret,updated_at) VALUES
 		('theme','dark',0,?),
 		('hf_token','must-be-removed',0,?),
-		('legacy_secret','must-be-removed',1,?)`, now, now, now); err != nil {
+		('upstream-api-key','must-be-removed',0,?),
+		('oauth.client-secret','must-be-removed',0,?),
+		('legacy_secret','must-be-removed',1,?)`, now, now, now, now, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = db.Exec(`INSERT INTO api_requests(id,request_id,method,path,status_code,duration_ms,created_at) VALUES('legacy-row','same-client-id','POST','/v1/responses',200,1,?)`, now); err != nil {
