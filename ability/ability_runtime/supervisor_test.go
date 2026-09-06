@@ -4,6 +4,7 @@ package ability_runtime
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"os"
@@ -39,6 +40,24 @@ func readyOptions(t *testing.T, s *Supervisor) Options {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok")), Header: make(http.Header), Request: r}, nil
 	})}
 	return Options{Model: "model", Host: "127.0.0.1", Port: 18000}
+}
+
+func TestNewSupervisorReadinessClientDoesNotUseProxyOrFollowRedirects(t *testing.T) {
+	s := NewSupervisor("vllm", time.Second, time.Second)
+	transport, ok := s.client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("readiness transport = %T, want *http.Transport", s.client.Transport)
+	}
+	if transport.Proxy != nil {
+		t.Fatal("readiness transport must not use host proxy configuration")
+	}
+	request, err := http.NewRequest(http.MethodGet, "http://127.0.0.1:8000/elsewhere", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = s.client.CheckRedirect(request, nil); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("redirect policy error = %v, want http.ErrUseLastResponse", err)
+	}
 }
 
 func eventually(t *testing.T, f func() bool) {

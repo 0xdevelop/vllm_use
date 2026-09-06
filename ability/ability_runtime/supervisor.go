@@ -61,7 +61,26 @@ type Supervisor struct {
 }
 
 func NewSupervisor(binary string, grace, ready time.Duration) *Supervisor {
-	return &Supervisor{binary: binary, grace: grace, readyTimeout: ready, healthInterval: 200 * time.Millisecond, client: &http.Client{Timeout: 2 * time.Second}, state: State{Status: Stopped}}
+	transport := &http.Transport{
+		// Readiness is a control-plane probe of the exact loopback endpoint
+		// derived from validated runtime options. Host proxy settings must not
+		// redirect it outside that boundary.
+		Proxy:                 nil,
+		DialContext:           (&net.Dialer{Timeout: 2 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          10,
+		IdleConnTimeout:       30 * time.Second,
+		TLSHandshakeTimeout:   2 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   2 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	return &Supervisor{binary: binary, grace: grace, readyTimeout: ready, healthInterval: 200 * time.Millisecond, client: client, state: State{Status: Stopped}}
 }
 func (s *Supervisor) SetHealthInterval(d time.Duration) {
 	if d > 0 {
