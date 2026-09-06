@@ -35,6 +35,16 @@ func normalizedSettingKey(key string) string {
 	return normalized.String()
 }
 
+func isSensitiveSettingKey(key string) bool {
+	key = normalizedSettingKey(key)
+	for _, fragment := range sensitiveSettingFragments {
+		if strings.Contains(key, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
 func validateSetting(v *Setting) error {
 	v.Key = strings.TrimSpace(v.Key)
 	if v.Key == "" {
@@ -48,11 +58,8 @@ func validateSetting(v *Setting) error {
 	}
 	// Compare a separator-free form so cosmetic spelling cannot turn an
 	// API-key/credential field into a persistable non-sensitive setting.
-	key := normalizedSettingKey(v.Key)
-	for _, fragment := range sensitiveSettingFragments {
-		if strings.Contains(key, fragment) {
-			return ErrSensitiveSetting
-		}
+	if isSensitiveSettingKey(v.Key) {
+		return ErrSensitiveSetting
 	}
 	return nil
 }

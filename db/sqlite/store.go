@@ -148,7 +148,51 @@ func (s *Store) migrate(ctx context.Context) error {
 			return fmt.Errorf("commit migration %d: %w", i+1, err)
 		}
 	}
+	// SQL migrations covered common ASCII separators, but SQLite TEXT can also
+	// contain Unicode format/symbol characters. Reapply the write-side policy on
+	// every open so upgraded or externally edited databases cannot expose a
+	// disguised credential through settings.list.
+	if err := s.purgeSensitiveSettings(ctx); err != nil {
+		return fmt.Errorf("purge sensitive settings: %w", err)
+	}
 	return nil
+}
+
+func (s *Store) purgeSensitiveSettings(ctx context.Context) error {
+	tx, err := s.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT key,secret FROM settings`)
+	if err != nil {
+		return err
+	}
+	var keys []string
+	for rows.Next() {
+		var key string
+		var secret int
+		if err = rows.Scan(&key, &secret); err != nil {
+			rows.Close()
+			return err
+		}
+		if secret != 0 || isSensitiveSettingKey(key) {
+			keys = append(keys, key)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err = rows.Close(); err != nil {
+		return err
+	}
+	for _, key := range keys {
+		if _, err = tx.ExecContext(ctx, `DELETE FROM settings WHERE key=?`, key); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 var ErrNotFound = errors.New("not found")

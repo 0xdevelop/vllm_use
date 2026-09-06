@@ -203,3 +203,41 @@ func TestOpenUpgradesExistingSchema(t *testing.T) {
 		t.Fatalf("preserved duplicate request audits=%d err=%v", requests, err)
 	}
 }
+
+func TestOpenPurgesUnicodeDisguisedSensitiveSettingsFromCurrentSchema(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "current.db")
+	s, err := Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	for _, row := range []struct {
+		key, value string
+		secret     int
+	}{
+		{key: "theme", value: "dark"},
+		{key: "upstream_api\u200bkey", value: "must-be-removed"},
+		{key: "oauth.🔐secret", value: "must-be-removed"},
+		{key: "legacy-value", value: "must-be-removed", secret: 1},
+	} {
+		if _, err = s.DB.Exec(`INSERT INTO settings(key,value,secret,updated_at) VALUES(?,?,?,?)`, row.key, row.value, row.secret, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err = Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	settings, err := s.Settings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(settings) != 1 || settings[0].Key != "theme" || settings[0].Value != "dark" {
+		t.Fatalf("settings after current-schema cleanup: %+v", settings)
+	}
+}

@@ -36,6 +36,8 @@ func TestSettingsRuntimeConfigAndRequestsCRUD(t *testing.T) {
 		{Key: "hf_token", Value: "secret"},
 		{Key: "upstream_api_key", Value: "secret"},
 		{Key: "upstream-api-key", Value: "secret"},
+		{Key: "upstream_api\u200bkey", Value: "secret"},
+		{Key: "oauth.🔐secret", Value: "secret"},
 		{Key: "oauth.client-secret", Value: "secret"},
 		{Key: "private/key", Value: "secret"},
 		{Key: "database.password", Value: "secret"},
