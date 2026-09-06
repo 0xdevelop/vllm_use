@@ -114,6 +114,41 @@ func TestReadinessTimeoutStopsProcess(t *testing.T) {
 	eventually(t, func() bool { st := s.State().Status; return st == Stopped || st == Failed })
 }
 
+func TestStopHonorsCanceledContextWhenProcessCannotBeReaped(t *testing.T) {
+	s := NewSupervisor("vllm", time.Hour, time.Second)
+	s.cmd = &exec.Cmd{Process: &os.Process{Pid: 1_000_000_000}}
+	s.done = make(chan struct{})
+	s.state = State{Status: Running, PID: s.cmd.Process.Pid}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := s.Stop(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stop error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("stop ignored caller deadline for %s", elapsed)
+	}
+}
+
+func TestStopBoundsWaitAfterSIGKILL(t *testing.T) {
+	s := NewSupervisor("vllm", 5*time.Millisecond, time.Second)
+	s.killWait = 20 * time.Millisecond
+	s.cmd = &exec.Cmd{Process: &os.Process{Pid: 1_000_000_000}}
+	s.done = make(chan struct{})
+	s.state = State{Status: Running, PID: s.cmd.Process.Pid}
+
+	started := time.Now()
+	err := s.Stop(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "did not exit after SIGKILL") {
+		t.Fatalf("stop error = %v, want bounded SIGKILL error", err)
+	}
+	if elapsed := time.Since(started); elapsed > 250*time.Millisecond {
+		t.Fatalf("stop waited without bound for %s", elapsed)
+	}
+}
+
 func TestNonLoopbackHostRejected(t *testing.T) {
 	if _, err := BuildArgs(Options{Model: "model", Host: "0.0.0.0", Port: 8000}); err == nil {
 		t.Fatal("non-loopback runtime host accepted")

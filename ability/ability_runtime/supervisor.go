@@ -34,6 +34,7 @@ const (
 
 	maxRuntimeLogLineBytes    = 64 << 10
 	runtimeLogTruncatedSuffix = "… [truncated]"
+	defaultKillWait           = 5 * time.Second
 )
 
 type State struct {
@@ -57,6 +58,7 @@ type Supervisor struct {
 	cancel              context.CancelFunc
 	state               State
 	healthInterval      time.Duration
+	killWait            time.Duration
 	done                chan struct{}
 }
 
@@ -80,7 +82,7 @@ func NewSupervisor(binary string, grace, ready time.Duration) *Supervisor {
 			return http.ErrUseLastResponse
 		},
 	}
-	return &Supervisor{binary: binary, grace: grace, readyTimeout: ready, healthInterval: 200 * time.Millisecond, client: client, state: State{Status: Stopped}}
+	return &Supervisor{binary: binary, grace: grace, readyTimeout: ready, healthInterval: 200 * time.Millisecond, killWait: defaultKillWait, client: client, state: State{Status: Stopped}}
 }
 func (s *Supervisor) SetHealthInterval(d time.Duration) {
 	if d > 0 {
@@ -293,28 +295,24 @@ func (s *Supervisor) stop(ctx context.Context) error {
 	_ = syscall.Kill(-pid, syscall.SIGTERM)
 	timer := time.NewTimer(s.grace)
 	defer timer.Stop()
-	tick := time.NewTicker(25 * time.Millisecond)
-	defer tick.Stop()
 	for {
 		select {
+		case <-done:
+			return nil
 		case <-ctx.Done():
 			_ = syscall.Kill(-pid, syscall.SIGKILL)
-			if done != nil {
-				<-done
-			}
 			return ctx.Err()
 		case <-timer.C:
 			_ = syscall.Kill(-pid, syscall.SIGKILL)
-			if done != nil {
-				<-done
-			}
-			return nil
-		case <-tick.C:
-			s.mu.RLock()
-			done := s.cmd != cmd
-			s.mu.RUnlock()
-			if done {
+			killTimer := time.NewTimer(s.killWait)
+			defer killTimer.Stop()
+			select {
+			case <-done:
 				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-killTimer.C:
+				return errors.New("runtime did not exit after SIGKILL")
 			}
 		}
 	}

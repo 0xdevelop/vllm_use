@@ -180,7 +180,9 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 			if shutdownErr := downloads.Shutdown(shutdownCtx); shutdownErr != nil {
 				slog.Warn("stop model downloads", "error", shutdownErr)
 			}
-			_ = supervisor.Stop(shutdownCtx)
+			if shutdownErr := supervisor.Stop(shutdownCtx); shutdownErr != nil {
+				slog.Warn("stop vLLM runtime", "error", shutdownErr)
+			}
 			if waitErr := proxy.WaitRecords(shutdownCtx); waitErr != nil {
 				slog.Warn("drain gateway audit records", "error", waitErr)
 			}
