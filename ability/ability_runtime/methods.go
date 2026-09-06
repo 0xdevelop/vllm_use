@@ -27,33 +27,31 @@ func LoadAPIMethods() {
 	start := func(restart bool) func(context.Context, interface{}) (interface{}, error) {
 		return func(ctx context.Context, input interface{}) (interface{}, error) {
 			var in struct {
-				Options   Options `json:"options"`
-				HealthURL string  `json:"health_url,omitempty"`
+				Options Options `json:"options"`
 			}
 			if err := api_supported_methods.DecodeArguments(input, &in); err != nil {
 				return nil, err
 			}
 			var err error
 			if currentSwitch != nil && restart {
-				err = currentSwitch.Restart(ctx, in.Options, in.HealthURL)
+				err = currentSwitch.Restart(ctx, in.Options)
 			} else if currentSwitch != nil {
-				err = currentSwitch.Start(ctx, in.Options, in.HealthURL)
+				err = currentSwitch.Start(ctx, in.Options)
 			} else if restart {
-				err = supervisor().Restart(ctx, in.Options, in.HealthURL)
+				err = supervisor().Restart(ctx, in.Options)
 			} else {
-				err = supervisor().Start(ctx, in.Options, in.HealthURL)
+				err = supervisor().Start(ctx, in.Options)
 			}
 			return runtimeState(), err
 		}
 	}
-	props := map[string]interface{}{"options": map[string]interface{}{"type": "object"}, "health_url": str()}
+	props := map[string]interface{}{"options": map[string]interface{}{"type": "object"}}
 	add(MethodStart, "启动 vLLM Runtime", props, []string{"options"}, start(false))
 	add(MethodRestart, "重启 vLLM Runtime", props, []string{"options"}, start(true))
-	add(MethodSwitch, "切换活动模型", map[string]interface{}{"model_id": str(), "options": map[string]interface{}{"type": "object"}, "health_url": str()}, []string{"model_id", "options"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+	add(MethodSwitch, "切换活动模型", map[string]interface{}{"model_id": str(), "options": map[string]interface{}{"type": "object"}}, []string{"model_id", "options"}, func(ctx context.Context, input interface{}) (interface{}, error) {
 		var in struct {
-			ModelID   string  `json:"model_id"`
-			Options   Options `json:"options"`
-			HealthURL string  `json:"health_url,omitempty"`
+			ModelID string  `json:"model_id"`
+			Options Options `json:"options"`
 		}
 		if err := api_supported_methods.DecodeArguments(input, &in); err != nil {
 			return nil, err
@@ -64,7 +62,7 @@ func LoadAPIMethods() {
 		if in.ModelID == "" {
 			return nil, errors.New("model_id is required")
 		}
-		err := currentSwitch.Switch(ctx, in.ModelID, in.Options, in.HealthURL)
+		err := currentSwitch.Switch(ctx, in.ModelID, in.Options)
 		return runtimeState(), err
 	})
 	add(MethodStop, "停止 vLLM Runtime", nil, nil, func(ctx context.Context, _ interface{}) (interface{}, error) {

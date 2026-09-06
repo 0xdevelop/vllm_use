@@ -178,8 +178,7 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		execute(w, r, ability_runtime.MethodStatus, map[string]interface{}{})
 	case r.Method == "POST" && (p == "/api/runtime/start" || p == "/api/runtime/restart"):
 		var in struct {
-			Options   ability_runtime.Options `json:"options"`
-			HealthURL string                  `json:"health_url,omitempty"`
+			Options ability_runtime.Options `json:"options"`
 		}
 		if !decode(w, r, &in) {
 			return
@@ -188,17 +187,16 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 		if p == "/api/runtime/restart" {
 			method = ability_runtime.MethodRestart
 		}
-		execute(w, r, method, map[string]interface{}{"options": in.Options, "health_url": in.HealthURL})
+		execute(w, r, method, map[string]interface{}{"options": in.Options})
 	case r.Method == "POST" && p == "/api/runtime/switch":
 		var in struct {
-			ModelID   string                  `json:"model_id"`
-			Options   ability_runtime.Options `json:"options"`
-			HealthURL string                  `json:"health_url,omitempty"`
+			ModelID string                  `json:"model_id"`
+			Options ability_runtime.Options `json:"options"`
 		}
 		if !decode(w, r, &in) {
 			return
 		}
-		execute(w, r, ability_runtime.MethodSwitch, map[string]interface{}{"model_id": in.ModelID, "options": in.Options, "health_url": in.HealthURL})
+		execute(w, r, ability_runtime.MethodSwitch, map[string]interface{}{"model_id": in.ModelID, "options": in.Options})
 	case r.Method == "POST" && p == "/api/runtime/stop":
 		execute(w, r, ability_runtime.MethodStop, map[string]interface{}{})
 	case r.Method == "GET" && p == "/api/settings":

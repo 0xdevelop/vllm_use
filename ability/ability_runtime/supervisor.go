@@ -89,15 +89,12 @@ func (s *Supervisor) SetHealthInterval(d time.Duration) {
 		s.mu.Unlock()
 	}
 }
-func (s *Supervisor) Start(ctx context.Context, o Options, healthURL string) error {
+func (s *Supervisor) Start(ctx context.Context, o Options) error {
 	s.opMu.Lock()
 	defer s.opMu.Unlock()
-	return s.start(ctx, o, healthURL)
+	return s.start(ctx, o)
 }
-func (s *Supervisor) start(ctx context.Context, o Options, healthURL string) error {
-	if healthURL != "" {
-		return errors.New("health_url is not accepted; readiness is derived from runtime options")
-	}
+func (s *Supervisor) start(ctx context.Context, o Options) error {
 	args, e := BuildArgs(o)
 	if e != nil {
 		return e
@@ -148,7 +145,7 @@ func (s *Supervisor) start(ctx context.Context, o Options, healthURL string) err
 	if host == "" {
 		host = "127.0.0.1"
 	}
-	healthURL = (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, strconv.Itoa(o.Port)), Path: "/health"}).String()
+	healthURL := (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, strconv.Itoa(o.Port)), Path: "/health"}).String()
 	if e = s.poll(ctx, cmd, healthURL); e != nil {
 		_ = s.stop(context.Background())
 		return e
@@ -322,13 +319,10 @@ func (s *Supervisor) stop(ctx context.Context) error {
 		}
 	}
 }
-func (s *Supervisor) Restart(ctx context.Context, o Options, h string) error {
+func (s *Supervisor) Restart(ctx context.Context, o Options) error {
 	// Validate the replacement before stopping a healthy runtime. Restart is a
 	// destructive operation once stop begins, so malformed options must fail
 	// without causing an avoidable outage.
-	if h != "" {
-		return errors.New("health_url is not accepted; readiness is derived from runtime options")
-	}
 	if _, err := BuildArgs(o); err != nil {
 		return err
 	}
@@ -337,7 +331,7 @@ func (s *Supervisor) Restart(ctx context.Context, o Options, h string) error {
 	if e := s.stop(ctx); e != nil {
 		return e
 	}
-	return s.start(ctx, o, h)
+	return s.start(ctx, o)
 }
 func setEnv(env []string, key, value string) []string {
 	prefix := key + "="
@@ -382,7 +376,7 @@ func (x *SwitchService) SetModelResolver(resolve ModelResolver) {
 	x.mu.Unlock()
 }
 
-func (x *SwitchService) Switch(ctx context.Context, id string, o Options, h string) error {
+func (x *SwitchService) Switch(ctx context.Context, id string, o Options) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
 	if x.resolver == nil {
@@ -411,7 +405,7 @@ func (x *SwitchService) Switch(ctx context.Context, id string, o Options, h stri
 	}
 	x.active = ""
 	x.modelPath = ""
-	if err = x.s.Start(ctx, o, h); err != nil {
+	if err = x.s.Start(ctx, o); err != nil {
 		return err
 	}
 	x.active = id
@@ -422,10 +416,10 @@ func (x *SwitchService) Switch(ctx context.Context, id string, o Options, h stri
 // Start launches options that are not associated with a registry model. A
 // failed duplicate start preserves any existing association; a successful
 // direct start intentionally clears it.
-func (x *SwitchService) Start(ctx context.Context, o Options, h string) error {
+func (x *SwitchService) Start(ctx context.Context, o Options) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	if err := x.s.Start(ctx, o, h); err != nil {
+	if err := x.s.Start(ctx, o); err != nil {
 		return err
 	}
 	x.active = ""
@@ -437,10 +431,10 @@ func (x *SwitchService) Start(ctx context.Context, o Options, h string) error {
 // still serves the previously registered model. Supervisor.Restart validates
 // before stopping, so an invalid preflight keeps both the process and its
 // association intact.
-func (x *SwitchService) Restart(ctx context.Context, o Options, h string) error {
+func (x *SwitchService) Restart(ctx context.Context, o Options) error {
 	x.mu.Lock()
 	defer x.mu.Unlock()
-	err := x.s.Restart(ctx, o, h)
+	err := x.s.Restart(ctx, o)
 	status := x.s.State().Status
 	if err == nil {
 		x.active = ""

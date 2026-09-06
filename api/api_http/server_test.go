@@ -201,8 +201,8 @@ func TestMajorAdminRoutesAndJSONContract(t *testing.T) {
 		t.Fatalf("unknown runtime field accepted: %d %s", w.Code, w.Body.String())
 	}
 	w = request(t, h, http.MethodPost, "/api/runtime/start", "admin", `{"options":{"model":"m","host":"127.0.0.1","port":8000,"tensor_parallel":1,"pipeline_parallel_size":1,"gpu_devices":[0],"gpu_memory_utilization":0.9,"max_model_len":4096,"dtype":"auto","quantization":"awq","trust_remote_code":true,"tool_call_parser":"hermes","reasoning_parser":"deepseek_r1","enable_auto_tool_choice":true,"served_model_name":"m","extra_args":[]},"health_url":"http://127.0.0.1:8000/health"}`)
-	if w.Code == http.StatusBadRequest && decodeObject(t, w)["error"] == "invalid JSON" {
-		t.Fatalf("Web runtime contract rejected: %s", w.Body.String())
+	if w.Code != http.StatusBadRequest || decodeObject(t, w)["error"] != "invalid JSON" {
+		t.Fatalf("caller-controlled health URL accepted: %d %s", w.Code, w.Body.String())
 	}
 	w = request(t, h, http.MethodDelete, "/api/keys/"+keyID, "admin", "")
 	if w.Code != http.StatusOK {

@@ -433,17 +433,12 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 }
 ```
 
-可选字段：`health_url`。
-
 `arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
 
 ```json
 {
   "additionalProperties": false,
   "properties": {
-    "health_url": {
-      "type": "string"
-    },
     "options": {
       "type": "object"
     }
@@ -467,17 +462,12 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 }
 ```
 
-可选字段：`health_url`。
-
 `arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
 
 ```json
 {
   "additionalProperties": false,
   "properties": {
-    "health_url": {
-      "type": "string"
-    },
     "options": {
       "type": "object"
     }
@@ -502,17 +492,12 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 }
 ```
 
-可选字段：`health_url`。
-
 `arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
 
 ```json
 {
   "additionalProperties": false,
   "properties": {
-    "health_url": {
-      "type": "string"
-    },
     "model_id": {
       "type": "string"
     },

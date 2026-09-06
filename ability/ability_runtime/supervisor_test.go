@@ -74,13 +74,13 @@ func eventually(t *testing.T, f func() bool) {
 func TestSupervisorLifecycleDuplicateAndIdempotentStop(t *testing.T) {
 	s := NewSupervisor(script(t, `trap 'exit 0' TERM; echo ready; while :; do sleep 1; done`), 500*time.Millisecond, time.Second)
 	o := readyOptions(t, s)
-	if err := s.Start(context.Background(), o, ""); err != nil {
+	if err := s.Start(context.Background(), o); err != nil {
 		t.Fatal(err)
 	}
 	if st := s.State(); st.Status != Running || st.PID == 0 || st.StartedAt == nil || st.ReadyAt == nil {
 		t.Fatalf("state %#v", st)
 	}
-	if err := s.Start(context.Background(), o, ""); err == nil {
+	if err := s.Start(context.Background(), o); err == nil {
 		t.Fatal("duplicate start accepted")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -97,7 +97,7 @@ func TestSupervisorLifecycleDuplicateAndIdempotentStop(t *testing.T) {
 func TestSupervisorAbnormalExit(t *testing.T) {
 	s := NewSupervisor(script(t, "echo failure >&2; exit 7"), time.Second, time.Second)
 	o := readyOptions(t, s)
-	_ = s.Start(context.Background(), o, "")
+	_ = s.Start(context.Background(), o)
 	eventually(t, func() bool { return s.State().Status == Failed })
 	st := s.State()
 	if st.ExitError == "" || st.StoppedAt == nil {
@@ -107,18 +107,14 @@ func TestSupervisorAbnormalExit(t *testing.T) {
 
 func TestReadinessTimeoutStopsProcess(t *testing.T) {
 	s := NewSupervisor(script(t, `trap 'exit 0' TERM; while :; do sleep 1; done`), 100*time.Millisecond, 40*time.Millisecond)
-	err := s.Start(context.Background(), Options{Model: "model", Port: 1}, "")
+	err := s.Start(context.Background(), Options{Model: "model", Port: 1})
 	if err == nil {
 		t.Fatal("expected readiness timeout")
 	}
 	eventually(t, func() bool { st := s.State().Status; return st == Stopped || st == Failed })
 }
 
-func TestCallerHealthURLRejectedAndNonLoopbackHostRejected(t *testing.T) {
-	s := NewSupervisor(script(t, "exit 0"), time.Second, time.Second)
-	if err := s.Start(context.Background(), Options{Model: "model", Port: 8000}, "http://example.com/fake"); err == nil {
-		t.Fatal("caller-controlled health URL accepted")
-	}
+func TestNonLoopbackHostRejected(t *testing.T) {
 	if _, err := BuildArgs(Options{Model: "model", Host: "0.0.0.0", Port: 8000}); err == nil {
 		t.Fatal("non-loopback runtime host accepted")
 	}
@@ -129,7 +125,7 @@ func TestLargeLogLineAndIgnoredTERMRestart(t *testing.T) {
 	first := script(t, `trap '' TERM; printf '%s\n' "`+long+`"; while :; do sleep 1; done`)
 	s := NewSupervisor(first, 30*time.Millisecond, time.Second)
 	o := readyOptions(t, s)
-	if err := s.Start(context.Background(), o, ""); err != nil {
+	if err := s.Start(context.Background(), o); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, func() bool { return len(s.State().Logs) == 1 })
@@ -137,7 +133,7 @@ func TestLargeLogLineAndIgnoredTERMRestart(t *testing.T) {
 		t.Fatalf("large log was not bounded and marked: length=%d", len(got))
 	}
 	s.binary = script(t, `trap 'exit 0' TERM; while :; do sleep 1; done`)
-	if err := s.Restart(context.Background(), o, ""); err != nil {
+	if err := s.Restart(context.Background(), o); err != nil {
 		t.Fatal(err)
 	}
 	if len(s.State().Logs) != 0 {
@@ -178,7 +174,7 @@ func TestSupervisorDrainsOversizedProcessOutput(t *testing.T) {
 	binary := script(t, `dd if=/dev/zero bs=1048576 count=5 2>/dev/null | tr '\000' x; printf '\nafter\n'; trap 'exit 0' TERM; while :; do sleep 1; done`)
 	s := NewSupervisor(binary, time.Second, time.Second)
 	o := readyOptions(t, s)
-	if err := s.Start(context.Background(), o, ""); err != nil {
+	if err := s.Start(context.Background(), o); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Stop(context.Background()) })
@@ -196,7 +192,7 @@ func TestRuntimeChildEnvironmentExcludesManagerCredentials(t *testing.T) {
 	s := NewSupervisor(script(t, `env > "`+output+`"; trap 'exit 0' TERM; while :; do sleep 1; done`), time.Second, time.Second)
 	o := readyOptions(t, s)
 	o.GPUDevices = []int{2, 5}
-	if err := s.Start(context.Background(), o, ""); err != nil {
+	if err := s.Start(context.Background(), o); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, func() bool {
@@ -223,7 +219,7 @@ func TestUnexpectedLeaderExitCleansChildProcess(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "child.pid")
 	s := NewSupervisor(script(t, `sleep 30 & echo $! > "`+pidFile+`"; exit 7`), time.Second, time.Second)
 	o := readyOptions(t, s)
-	_ = s.Start(context.Background(), o, "")
+	_ = s.Start(context.Background(), o)
 	eventually(t, func() bool { return s.State().Status == Failed })
 	b, err := os.ReadFile(pidFile)
 	if err != nil {
@@ -246,7 +242,7 @@ func TestSwitchResolvesModelIDToReadyManagedPath(t *testing.T) {
 	x.SetModelResolver(func(_ context.Context, id string) (ModelTarget, error) {
 		return ModelTarget{ID: id, LocalPath: modelPath, Status: "ready"}, nil
 	})
-	if err := x.Switch(context.Background(), "model-1", o, ""); err != nil {
+	if err := x.Switch(context.Background(), "model-1", o); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = x.Stop(context.Background()) })
@@ -269,7 +265,7 @@ func TestSwitchRejectsUnreadyOrMismatchedModelBeforeStarting(t *testing.T) {
 	x.SetModelResolver(func(_ context.Context, id string) (ModelTarget, error) {
 		return ModelTarget{ID: id, LocalPath: filepath.Join(t.TempDir(), "model"), Status: "downloading"}, nil
 	})
-	if err := x.Switch(context.Background(), "model-1", Options{Port: 8000}, ""); err == nil || !strings.Contains(err.Error(), "not ready") {
+	if err := x.Switch(context.Background(), "model-1", Options{Port: 8000}); err == nil || !strings.Contains(err.Error(), "not ready") {
 		t.Fatalf("unready model error = %v", err)
 	}
 	if s.State().Status != Stopped {
@@ -280,7 +276,7 @@ func TestSwitchRejectsUnreadyOrMismatchedModelBeforeStarting(t *testing.T) {
 	x.SetModelResolver(func(_ context.Context, id string) (ModelTarget, error) {
 		return ModelTarget{ID: id, LocalPath: readyPath, Status: "ready"}, nil
 	})
-	if err := x.Switch(context.Background(), "model-1", Options{Model: "/different", Port: 8000}, ""); err == nil || !strings.Contains(err.Error(), "does not match") {
+	if err := x.Switch(context.Background(), "model-1", Options{Model: "/different", Port: 8000}); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("mismatched model error = %v", err)
 	}
 	if s.State().Status != Stopped {
@@ -291,7 +287,7 @@ func TestSwitchRejectsUnreadyOrMismatchedModelBeforeStarting(t *testing.T) {
 func TestRestartRejectsInvalidOptionsWithoutStoppingHealthyRuntime(t *testing.T) {
 	s := NewSupervisor(script(t, `trap 'exit 0' TERM; while :; do sleep 1; done`), time.Second, time.Second)
 	o := readyOptions(t, s)
-	if err := s.Start(context.Background(), o, ""); err != nil {
+	if err := s.Start(context.Background(), o); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = s.Stop(context.Background()) })
@@ -299,7 +295,7 @@ func TestRestartRejectsInvalidOptionsWithoutStoppingHealthyRuntime(t *testing.T)
 
 	invalid := o
 	invalid.Model = ""
-	if err := s.Restart(context.Background(), invalid, ""); err == nil {
+	if err := s.Restart(context.Background(), invalid); err == nil {
 		t.Fatal("invalid restart options accepted")
 	}
 	if state := s.State(); state.Status != Running || state.PID != pid {
@@ -310,7 +306,7 @@ func TestRestartRejectsInvalidOptionsWithoutStoppingHealthyRuntime(t *testing.T)
 func TestSwitchStopsDirectlyStartedRuntimeAndReplacesItsAssociation(t *testing.T) {
 	s := NewSupervisor(script(t, `trap 'exit 0' TERM; while :; do sleep 1; done`), time.Second, time.Second)
 	o := readyOptions(t, s)
-	if err := s.Start(context.Background(), o, ""); err != nil {
+	if err := s.Start(context.Background(), o); err != nil {
 		t.Fatal(err)
 	}
 	originalPID := s.State().PID
@@ -320,7 +316,7 @@ func TestSwitchStopsDirectlyStartedRuntimeAndReplacesItsAssociation(t *testing.T
 	x.SetModelResolver(func(_ context.Context, id string) (ModelTarget, error) {
 		return ModelTarget{ID: id, LocalPath: modelPath, Status: "ready"}, nil
 	})
-	if err := x.Switch(context.Background(), "model-2", Options{Host: "127.0.0.1", Port: 18000}, ""); err != nil {
+	if err := x.Switch(context.Background(), "model-2", Options{Host: "127.0.0.1", Port: 18000}); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = x.Stop(context.Background()) })
@@ -341,14 +337,14 @@ func TestDirectRestartClearsRegisteredModelAssociation(t *testing.T) {
 	x.SetModelResolver(func(_ context.Context, id string) (ModelTarget, error) {
 		return ModelTarget{ID: id, LocalPath: modelPath, Status: "ready"}, nil
 	})
-	if err := x.Switch(context.Background(), "model-1", o, ""); err != nil {
+	if err := x.Switch(context.Background(), "model-1", o); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = x.Stop(context.Background()) })
 
 	direct := o
 	direct.Model = modelPath
-	if err := x.Restart(context.Background(), direct, ""); err != nil {
+	if err := x.Restart(context.Background(), direct); err != nil {
 		t.Fatal(err)
 	}
 	if got := x.Active(); got != "" {
@@ -365,7 +361,7 @@ func TestModelDeletionGuardRejectsRegisteredAndDirectRuntimePaths(t *testing.T) 
 	x.SetModelResolver(func(_ context.Context, id string) (ModelTarget, error) {
 		return ModelTarget{ID: id, LocalPath: modelPath, Status: "ready"}, nil
 	})
-	if err := x.Switch(context.Background(), "model-1", o, ""); err != nil {
+	if err := x.Switch(context.Background(), "model-1", o); err != nil {
 		t.Fatal(err)
 	}
 	deleted := false
@@ -384,7 +380,7 @@ func TestModelDeletionGuardRejectsRegisteredAndDirectRuntimePaths(t *testing.T) 
 
 	direct := readyOptions(t, s)
 	direct.Model = modelPath
-	if err := x.Start(context.Background(), direct, ""); err != nil {
+	if err := x.Start(context.Background(), direct); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = x.Stop(context.Background()) })
@@ -421,7 +417,7 @@ func TestModelDeletionGuardSerializesRuntimeStart(t *testing.T) {
 	}()
 	<-entered
 	startDone := make(chan error, 1)
-	go func() { startDone <- x.Start(context.Background(), o, "") }()
+	go func() { startDone <- x.Start(context.Background(), o) }()
 	select {
 	case err := <-startDone:
 		t.Fatalf("runtime start crossed active deletion guard: %v", err)
