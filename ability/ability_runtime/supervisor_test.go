@@ -114,6 +114,29 @@ func TestReadinessTimeoutStopsProcess(t *testing.T) {
 	eventually(t, func() bool { st := s.State().Status; return st == Stopped || st == Failed })
 }
 
+func TestCanceledStartDoesNotWaitForShutdownGrace(t *testing.T) {
+	s := NewSupervisor(script(t, `trap '' TERM; while :; do sleep 1; done`), time.Hour, time.Hour)
+	s.SetHealthInterval(time.Millisecond)
+	t.Cleanup(func() {
+		state := s.State()
+		if state.PID > 0 {
+			_ = syscall.Kill(-state.PID, syscall.SIGKILL)
+		}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	err := s.Start(ctx, Options{Model: "model", Host: "127.0.0.1", Port: 1})
+	if err == nil || !strings.Contains(err.Error(), "readiness timeout") {
+		t.Fatalf("start error = %v, want readiness cancellation", err)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("canceled start waited for shutdown grace for %s", elapsed)
+	}
+	eventually(t, func() bool { return s.State().Status == Stopped })
+}
+
 func TestStopHonorsCanceledContextWhenProcessCannotBeReaped(t *testing.T) {
 	s := NewSupervisor("vllm", time.Hour, time.Second)
 	s.cmd = &exec.Cmd{Process: &os.Process{Pid: 1_000_000_000}}

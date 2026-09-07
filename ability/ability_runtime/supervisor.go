@@ -149,7 +149,12 @@ func (s *Supervisor) start(ctx context.Context, o Options) error {
 	}
 	healthURL := (&url.URL{Scheme: "http", Host: net.JoinHostPort(host, strconv.Itoa(o.Port)), Path: "/health"}).String()
 	if e = s.poll(ctx, cmd, healthURL); e != nil {
-		_ = s.stop(context.Background())
+		// Preserve the caller's cancellation while cleaning up a launch that
+		// never became ready. Using Background here can strand the request for
+		// the entire configured shutdown grace when the child ignores SIGTERM.
+		// stop still sends SIGKILL before returning on a canceled context, while
+		// the wait goroutine owns eventual process reaping and state publication.
+		_ = s.stop(ctx)
 		return e
 	}
 	s.mu.Lock()
