@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 )
@@ -107,5 +108,32 @@ func TestVerifyRejectsMalformedSecretsBeforeDatabaseWork(t *testing.T) {
 		if _, err = m.Verify(context.Background(), candidate, "inference"); !errors.Is(err, ErrInvalidKey) {
 			t.Fatalf("malformed credential length=%d returned %v, want ErrInvalidKey", len(candidate), err)
 		}
+	}
+}
+
+func TestVerifyDoesNotRequireSpareDatabaseConnection(t *testing.T) {
+	s, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	m := New(s)
+	_, secret, err := m.Create(context.Background(), []string{"inference"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Production uses a small pool. Constraining this test to one connection
+	// catches a verifier that retains its SELECT cursor while trying to UPDATE
+	// last_used_at: that implementation blocks waiting for a connection it owns.
+	s.DB.SetMaxOpenConns(1)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	key, err := m.Verify(ctx, secret, "inference")
+	if err != nil {
+		t.Fatalf("verify with one database connection: %v", err)
+	}
+	if key.LastUsedAt == nil {
+		t.Fatal("successful verification did not publish last-used time")
 	}
 }

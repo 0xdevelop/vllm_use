@@ -27,8 +27,9 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
-	// A small pool permits an authentication lookup to update last-used metadata
-	// while its read cursor is still open. WAL and busy_timeout serialize writers.
+	// Keep the embedded service's SQLite concurrency bounded. Authentication
+	// closes lookup cursors before updating last-used metadata; WAL and
+	// busy_timeout serialize the remaining short writes.
 	db.SetMaxOpenConns(4)
 	s := &Store{DB: db}
 	if err = s.migrate(context.Background()); err != nil {

@@ -134,53 +134,48 @@ func (m *Manager) Verify(ctx context.Context, secret, need string) (*Key, error)
 	if !validSecret(secret) {
 		return nil, ErrInvalidKey
 	}
-	rows, e := m.s.DB.QueryContext(ctx, `SELECT id,name,prefix,salt,hash,enabled,scopes,created_at,last_used_at FROM api_keys WHERE prefix=?`, secret[:displayedPrefixSize])
+	// Prefix is unique. QueryRow closes its read cursor as soon as Scan returns,
+	// before the last-used write below. Keeping a Rows cursor open across that
+	// write makes authentication depend on a spare database connection and can
+	// deadlock a saturated pool when every verifier waits for its own update.
+	var k Key
+	var salt, want []byte
+	var enabled int
+	var scopes, created string
+	var last sql.NullString
+	e := m.s.DB.QueryRowContext(ctx, `SELECT id,name,prefix,salt,hash,enabled,scopes,created_at,last_used_at FROM api_keys WHERE prefix=?`, secret[:displayedPrefixSize]).Scan(&k.ID, &k.Name, &k.Prefix, &salt, &want, &enabled, &scopes, &created, &last)
+	if errors.Is(e, sql.ErrNoRows) {
+		return nil, ErrInvalidKey
+	}
 	if e != nil {
 		return nil, fmt.Errorf("lookup API key: %w", e)
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var k Key
-		var salt, want []byte
-		var enabled int
-		var scopes, created string
-		var last sql.NullString
-		if e = rows.Scan(&k.ID, &k.Name, &k.Prefix, &salt, &want, &enabled, &scopes, &created, &last); e != nil {
-			return nil, e
-		}
-		got, e := derive(secret, salt)
-		if e != nil {
-			return nil, e
-		}
-		if subtle.ConstantTimeCompare(got, want) == 1 {
-			if enabled != 1 {
-				return nil, ErrInvalidKey
-			}
-			k.Enabled = true
-			k.Scopes = strings.Split(scopes, ",")
-			if need != "" && !has(k.Scopes, need) {
-				return nil, ErrInsufficientScope
-			}
-			k.CreatedAt, e = time.Parse(time.RFC3339Nano, created)
-			if e != nil {
-				return nil, e
-			}
-			if last.Valid {
-				t, _ := time.Parse(time.RFC3339Nano, last.String)
-				k.LastUsedAt = &t
-			}
-			now := time.Now().UTC()
-			k.LastUsedAt = &now
-			if _, e = m.s.DB.ExecContext(ctx, `UPDATE api_keys SET last_used_at=? WHERE id=?`, now.Format(time.RFC3339Nano), k.ID); e != nil {
-				return nil, fmt.Errorf("update key usage: %w", e)
-			}
-			return &k, nil
-		}
-	}
-	if e = rows.Err(); e != nil {
+	got, e := derive(secret, salt)
+	if e != nil {
 		return nil, e
 	}
-	return nil, ErrInvalidKey
+	if subtle.ConstantTimeCompare(got, want) != 1 || enabled != 1 {
+		return nil, ErrInvalidKey
+	}
+	k.Enabled = true
+	k.Scopes = strings.Split(scopes, ",")
+	if need != "" && !has(k.Scopes, need) {
+		return nil, ErrInsufficientScope
+	}
+	k.CreatedAt, e = time.Parse(time.RFC3339Nano, created)
+	if e != nil {
+		return nil, e
+	}
+	if last.Valid {
+		t, _ := time.Parse(time.RFC3339Nano, last.String)
+		k.LastUsedAt = &t
+	}
+	now := time.Now().UTC()
+	k.LastUsedAt = &now
+	if _, e = m.s.DB.ExecContext(ctx, `UPDATE api_keys SET last_used_at=? WHERE id=?`, now.Format(time.RFC3339Nano), k.ID); e != nil {
+		return nil, fmt.Errorf("update key usage: %w", e)
+	}
+	return &k, nil
 }
 func validSecret(secret string) bool {
 	if len(secret) != len(secretPrefix)+secretRandomLength || !strings.HasPrefix(secret, secretPrefix) {
