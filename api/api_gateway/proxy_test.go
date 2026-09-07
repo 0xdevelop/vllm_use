@@ -20,6 +20,20 @@ type roundTrip func(*http.Request) (*http.Response, error)
 
 func (f roundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+func TestGatewayTransportDoesNotUseHostProxy(t *testing.T) {
+	u, _ := url.Parse("http://127.0.0.1:8000")
+	g := New(u, VerifyFunc(func(context.Context, string, string) (Principal, error) {
+		return Principal{}, nil
+	}))
+	transport, ok := g.proxy.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("gateway transport type = %T", g.proxy.Transport)
+	}
+	if transport.Proxy != nil {
+		t.Fatal("host-local vLLM upstream must not use HTTP_PROXY/HTTPS_PROXY")
+	}
+}
+
 func TestRoutingAuthStreamingAndErrors(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:8000")
 	g := New(u, VerifyFunc(func(_ context.Context, k, s string) (Principal, error) {

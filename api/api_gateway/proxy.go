@@ -66,7 +66,10 @@ func New(upstream *url.URL, v Verifier) *Gateway {
 }
 func NewWithOptions(upstream *url.URL, v Verifier, o Options) *Gateway {
 	p := httputil.NewSingleHostReverseProxy(upstream)
-	p.Transport = &http.Transport{Proxy: http.ProxyFromEnvironment, DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext, ForceAttemptHTTP2: true, MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 30 * time.Second, ExpectContinueTimeout: 1 * time.Second}
+	// The configured upstream is required to be a host-local vLLM origin.
+	// Ignore HTTP_PROXY/HTTPS_PROXY so manager traffic and its optional upstream
+	// credential cannot be redirected to an environment-controlled intermediary.
+	p.Transport = &http.Transport{Proxy: nil, DialContext: (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext, ForceAttemptHTTP2: true, MaxIdleConns: 100, IdleConnTimeout: 90 * time.Second, TLSHandshakeTimeout: 5 * time.Second, ResponseHeaderTimeout: 30 * time.Second, ExpectContinueTimeout: 1 * time.Second}
 	p.FlushInterval = -1
 	p.ErrorHandler = func(w http.ResponseWriter, r *http.Request, e error) {
 		write(w, http.StatusBadGateway, "upstream unavailable")
