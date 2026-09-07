@@ -170,6 +170,12 @@ func TestMajorAdminRoutesAndJSONContract(t *testing.T) {
 	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Fatalf("gpu list: %d %s", w.Code, w.Body.String())
 	}
+	w = request(t, h, http.MethodGet, "/api/system", "admin", "")
+	system := decodeObject(t, w)
+	dependencies, _ := system["dependencies"].([]any)
+	if w.Code != http.StatusOK || system["goos"] == "" || len(dependencies) != 3 {
+		t.Fatalf("system dependency diagnostics: %d %#v", w.Code, system)
+	}
 	destination := filepath.Join(modelsRoot, "owner--model")
 	w = request(t, h, http.MethodPost, "/api/downloads", "admin", `{"id":"job","repository":"owner/model","destination":`+jsonString(destination)+`,"token":"x","destination_path":"bad"}`)
 	if w.Code != http.StatusBadRequest {

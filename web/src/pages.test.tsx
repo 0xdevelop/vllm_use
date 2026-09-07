@@ -44,7 +44,14 @@ describe('settings page', () => {
       const path = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
       if (path === '/api/settings/theme' && init?.method === 'DELETE') return response({ deleted: true })
       if (path === '/api/settings') return response([{ key: 'theme', value: 'dark', updated_at: '2026-08-29T00:00:00Z' }])
-      if (path === '/api/system') return response({ go_version: 'go1.25', goos: 'linux', goarch: 'amd64', cpus: 4 })
+      if (path === '/api/system') return response({
+        go_version: 'go1.25', goos: 'linux', goarch: 'amd64', cpus: 4,
+        dependencies: [
+          { name: 'vllm', command: 'vllm', status: 'missing', error: 'executable file not found' },
+          { name: 'huggingface-cli', command: 'hf', status: 'available', resolved_path: '/usr/bin/hf' },
+          { name: 'nvidia-smi', command: 'nvidia-smi', status: 'available', resolved_path: '/usr/bin/nvidia-smi', device_count: 2 },
+        ],
+      })
       throw new Error(`unexpected fetch: ${path}`)
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -53,6 +60,10 @@ describe('settings page', () => {
     render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><SettingsPage /></QueryClientProvider>)
 
     expect(await screen.findByDisplayValue('theme')).toHaveAttribute('readonly')
+    expect(screen.getByRole('heading', { name: '宿主机依赖预检' })).toBeInTheDocument()
+    expect(screen.getByText('未安装或不可执行')).toBeInTheDocument()
+    expect(screen.getByText('可用 · 2 块 GPU')).toBeInTheDocument()
+    expect(screen.getByText('/usr/bin/hf')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '删除' }))
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/settings/theme', expect.objectContaining({ method: 'DELETE' })))
     await waitFor(() => expect(screen.queryByDisplayValue('theme')).not.toBeInTheDocument())

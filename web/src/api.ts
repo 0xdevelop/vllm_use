@@ -11,7 +11,8 @@ export type RequestMetadata={audit_id:string;request_id:string;method:string;pat
 export type MCPRequest={at:string;method?:string;name?:string;key_id?:string;remote_addr?:string;status_code:number;duration_ms:number}
 export type MCPStatus={protocol_version:string;transport:string;stateless:boolean;recent_requests:MCPRequest[]}
 export type Setting={key:string;value:string;updated_at:string}
-export type SystemStatus={go_version:string;goos:string;goarch:string;cpus:number}
+export type HostDependency={name:'vllm'|'huggingface-cli'|'nvidia-smi';command:string;status:'available'|'missing'|'error';resolved_path?:string;error?:string;device_count?:number}
+export type SystemStatus={go_version:string;goos:string;goarch:string;cpus:number;dependencies:HostDependency[]}
 export type Dashboard={models:number;runtime:Runtime;downloads:DownloadTask[];recent_requests:RequestMetadata[]}
 export class APIError extends Error{constructor(readonly status:number,message:string){super(message)}}
 export const tokenStore={get:()=>sessionStorage.getItem('vllm-use-admin-token')??'',set:(v:string)=>v?sessionStorage.setItem('vllm-use-admin-token',v):sessionStorage.removeItem('vllm-use-admin-token')}

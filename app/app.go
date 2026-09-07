@@ -140,6 +140,7 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 	ability_runtime.Setup(supervisor, switcher)
 	ability_api_key.Setup(keys)
 	ability_settings.Setup(st)
+	ability.SetupHostExecutables(c.VLLMBinary, c.HFCLI)
 	ability.LoadAbilityAPIMethods()
 	mcpHandler, err := api_mcp.Handler(c.MCPAllowedOrigins)
 	if err != nil {

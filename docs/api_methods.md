@@ -796,7 +796,7 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 
 ## 11.1. system.get
 
-读取系统信息
+读取系统信息与宿主机依赖预检
 
 `arguments` JSON Schema（约束说明，非请求体；`required` 数组 = 必填字段清单）：
 
