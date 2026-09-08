@@ -525,6 +525,111 @@ func TestDownloadModelDerivesAuthoritativeSourceAndDestination(t *testing.T) {
 	}
 }
 
+func TestRetryRejectsModelThatIsAlreadyReady(t *testing.T) {
+	root := t.TempDir()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	destination := filepath.Join(root, "model-id")
+	if err = os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-id','huggingface','org/model',?,?,'model','org/model','main',1,'ready',?)`, destination, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DB.Exec(`INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES('old-job','model-id','org/model','main',?,'failed',0,'old failure','[]',?,?,?,?)`, destination, now, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{cmd: &fakeCmd{}}
+	d := New("hf", runner)
+	d.SetRoot(root)
+	d.SetStore(st)
+	if _, err = d.Retry(context.Background(), "old-job", ""); err == nil || !strings.Contains(err.Error(), "already ready") {
+		t.Fatalf("retry result = %v", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("host CLI invoked %d times for a ready model", runner.calls)
+	}
+	job, ok := d.Status("old-job")
+	if !ok || job.State != Failed || job.Error != "old failure" {
+		t.Fatalf("rejected retry changed job: %#v", job)
+	}
+}
+
+func TestRetryUsesCurrentRegisteredModelAuthority(t *testing.T) {
+	root := t.TempDir()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	destination := filepath.Join(root, "model-id")
+	if err = os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(destination, "weights"), []byte("current"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-id','huggingface','org/current',NULL,?,'model','org/current','v2',0,'error',?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DB.Exec(`INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES('old-job','model-id','org/stale','v1','/outside/stale','failed',0,'old failure','[]',?,?,?,?)`, now, now, now, now); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{cmd: &fakeCmd{}}
+	d := New("hf", runner)
+	d.SetRoot(root)
+	d.SetStore(st)
+	job, err := d.Retry(context.Background(), "old-job", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Repo != "org/current" || job.Revision != "v2" || job.Destination != destination {
+		t.Fatalf("retry trusted historical job fields: %#v", job)
+	}
+	wantArgs := []string{"download", "org/current", "--local-dir", destination, "--revision", "v2"}
+	if strings.Join(runner.args, "|") != strings.Join(wantArgs, "|") {
+		t.Fatalf("retry args = %#v", runner.args)
+	}
+	waitForState(t, d, "old-job", Succeeded)
+}
+
+func TestLinkedAcceptanceAtomicallyRejectsIneligibleModelState(t *testing.T) {
+	root := t.TempDir()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	destination := filepath.Join(root, "model-id")
+	if err = os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-id','huggingface','org/model',?,?,'model','org/model','main',1,'ready',?)`, destination, now, now); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{cmd: &fakeCmd{}}
+	d := New("hf", runner)
+	d.SetRoot(root)
+	d.SetStore(st)
+	_, err = d.DownloadRequest(context.Background(), Request{ID: "stale-acceptance", ModelID: "model-id", Repository: "org/model", Revision: "main", Destination: destination})
+	if err == nil || !strings.Contains(err.Error(), "not available for download") {
+		t.Fatalf("linked acceptance result = %v", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("host CLI invoked %d times after rejected acceptance", runner.calls)
+	}
+	var jobs int
+	if err = st.DB.QueryRow(`SELECT COUNT(*) FROM downloads WHERE id='stale-acceptance'`).Scan(&jobs); err != nil || jobs != 0 {
+		t.Fatalf("rejected job persisted: count=%d err=%v", jobs, err)
+	}
+}
+
 func waitForState(t *testing.T, d *Downloader, id string, want State) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

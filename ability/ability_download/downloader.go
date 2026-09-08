@@ -669,10 +669,19 @@ func (d *Downloader) Retry(ctx context.Context, id, token string) (*Job, error) 
 	if !ok {
 		return nil, errors.New("job not found")
 	}
-	if j.State == Running {
+	if j.State == Running || j.State == Pending {
 		return nil, errors.New("download running")
 	}
-	return d.DownloadRequest(ctx, Request{ID: id, ModelID: j.ModelID, Repository: j.Repo, Revision: j.Revision, Destination: j.Destination, Token: token})
+	if j.State != Failed && j.State != Canceled {
+		return nil, errors.New("only failed or canceled downloads can be retried")
+	}
+	if j.ModelID == "" {
+		return nil, errors.New("download is not linked to a registered model")
+	}
+	// Resolve source, revision, destination and current eligibility from the
+	// registered model again. Persisted job fields are historical audit data and
+	// must not become authority for a new host-side download attempt.
+	return d.DownloadModel(ctx, id, j.ModelID, token)
 }
 
 // Shutdown stops accepting new work, cancels every active download, and waits
@@ -729,7 +738,11 @@ func (d *Downloader) persistAcceptanceLocked(ctx context.Context, j *Job) error 
 		return err
 	}
 	if j.ModelID != "" {
-		result, updateErr := tx.ExecContext(ctx, `UPDATE models SET status='downloading',updated_at=? WHERE id=?`, now, j.ModelID)
+		// Claim only a currently retryable model state in the same transaction as
+		// the job upsert. This closes the gap between DownloadModel's read and host
+		// process launch, so a stale request cannot move a ready/downloading model
+		// backwards and overwrite its files.
+		result, updateErr := tx.ExecContext(ctx, `UPDATE models SET status='downloading',updated_at=? WHERE id=? AND status IN ('registered','error','failed','canceled')`, now, j.ModelID)
 		if updateErr != nil {
 			return updateErr
 		}
@@ -738,7 +751,7 @@ func (d *Downloader) persistAcceptanceLocked(ctx context.Context, j *Job) error 
 			return rowsErr
 		}
 		if rows != 1 {
-			return errors.New("registered model disappeared before download acceptance")
+			return errors.New("registered model is not available for download")
 		}
 	}
 	return tx.Commit()
