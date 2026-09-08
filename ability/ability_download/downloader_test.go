@@ -25,21 +25,41 @@ type fakeRunner struct {
 func TestDownloadDestinationStaysInsideRoot(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()
+	sentinel := filepath.Join(outside, "sentinel")
+	if err := os.WriteFile(sentinel, []byte("unchanged"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
 		t.Fatal(err)
 	}
-	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+	if err := os.Symlink(outside, filepath.Join(root, "destination-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "destination-file"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{cmd: &fakeCmd{}}
+	d := New("hf", runner)
 	d.SetRoot(root)
 	for _, tc := range []struct{ id, destination string }{
 		{"", filepath.Join(root, "model")},
 		{"slash/id", filepath.Join(root, "model")},
 		{"outside", filepath.Join(outside, "model")},
-		{"symlink", filepath.Join(root, "escape", "new", "model")},
+		{"symlink parent", filepath.Join(root, "escape", "new", "model")},
+		{"symlink destination", filepath.Join(root, "destination-link")},
+		{"regular-file destination", filepath.Join(root, "destination-file")},
 		{"root", root},
 	} {
 		if _, err := d.Download(context.Background(), tc.id, "org/model", tc.destination, ""); err == nil {
 			t.Fatalf("accepted id=%q destination=%q", tc.id, tc.destination)
 		}
+	}
+	if runner.calls != 0 {
+		t.Fatalf("host CLI invoked %d times for rejected destinations", runner.calls)
+	}
+	contents, err := os.ReadFile(sentinel)
+	if err != nil || string(contents) != "unchanged" {
+		t.Fatalf("symlink target changed: contents=%q err=%v", contents, err)
 	}
 }
 

@@ -211,38 +211,8 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 		}
 	}
 	if root != "" {
-		if !filepath.IsAbs(dest) {
-			return nil, errors.New("download destination must be absolute")
-		}
-		clean := filepath.Clean(dest)
-		rel, e := filepath.Rel(root, clean)
-		if e != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return nil, errors.New("download destination must be inside models root")
-		}
-		rootReal, e := filepath.EvalSymlinks(root)
-		if e != nil {
-			return nil, errors.New("resolve models root: " + e.Error())
-		}
-		ancestor := filepath.Dir(clean)
-		for {
-			if _, e = os.Lstat(ancestor); e == nil {
-				break
-			} else if !errors.Is(e, os.ErrNotExist) {
-				return nil, errors.New("inspect download destination: " + e.Error())
-			}
-			next := filepath.Dir(ancestor)
-			if next == ancestor {
-				return nil, errors.New("download destination has no existing parent")
-			}
-			ancestor = next
-		}
-		real, e := filepath.EvalSymlinks(ancestor)
-		if e != nil {
-			return nil, errors.New("resolve download destination parent: " + e.Error())
-		}
-		rr, e := filepath.Rel(rootReal, real)
-		if e != nil || rr == ".." || strings.HasPrefix(rr, ".."+string(filepath.Separator)) {
-			return nil, errors.New("download destination parent escapes models root")
+		if err := validateDownloadDestination(root, dest); err != nil {
+			return nil, err
 		}
 	}
 	d.mu.Lock()
@@ -478,6 +448,73 @@ func setEnvironment(env []string, key, value string) []string {
 		}
 	}
 	return append(out, prefix+value)
+}
+
+func validateDownloadDestination(root, destination string) error {
+	if !filepath.IsAbs(destination) {
+		return errors.New("download destination must be absolute")
+	}
+	root = filepath.Clean(root)
+	clean := filepath.Clean(destination)
+	rel, err := filepath.Rel(root, clean)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("download destination must be inside models root")
+	}
+	rootReal, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return errors.New("resolve models root: " + err.Error())
+	}
+
+	// Hugging Face reopens --local-dir by pathname. Reject an existing link (or
+	// any linked parent) before launching it so a pre-planted model path cannot
+	// redirect writes outside the managed root. A final completion check still
+	// catches replacement while the external process is running.
+	ancestor := clean
+	for {
+		info, inspectErr := os.Lstat(ancestor)
+		if inspectErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 {
+				return errors.New("download destination path must not contain symlinks")
+			}
+			if ancestor == clean && !info.IsDir() {
+				return errors.New("download destination must be a directory")
+			}
+			break
+		}
+		if !errors.Is(inspectErr, os.ErrNotExist) {
+			return errors.New("inspect download destination: " + inspectErr.Error())
+		}
+		next := filepath.Dir(ancestor)
+		if next == ancestor {
+			return errors.New("download destination has no existing parent")
+		}
+		ancestor = next
+	}
+	for path := ancestor; ; path = filepath.Dir(path) {
+		info, inspectErr := os.Lstat(path)
+		if inspectErr != nil {
+			return errors.New("inspect download destination parent: " + inspectErr.Error())
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return errors.New("download destination path must not contain symlinks")
+		}
+		if path == root {
+			break
+		}
+		next := filepath.Dir(path)
+		if next == path {
+			return errors.New("download destination parent escapes models root")
+		}
+	}
+	real, err := filepath.EvalSymlinks(ancestor)
+	if err != nil {
+		return errors.New("resolve download destination parent: " + err.Error())
+	}
+	realRel, err := filepath.Rel(rootReal, real)
+	if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) {
+		return errors.New("download destination parent escapes models root")
+	}
+	return nil
 }
 
 func (d *Downloader) completedDownload(destination string) (string, int64, error) {
