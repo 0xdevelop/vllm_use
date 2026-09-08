@@ -37,7 +37,11 @@ func Handler(trustedOrigins []string) (http.Handler, error) {
 	}
 	protectedHandler := crossOriginProtection.Handler(handler)
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("Mcp-Protocol-Version") != mcpProtocolVersion {
+		// Require one canonical field value. Header.Get silently selects the first
+		// value when a proxy or client sends duplicates, while another hop may
+		// combine or select them differently and interpret a different version.
+		versions := request.Header.Values("Mcp-Protocol-Version")
+		if len(versions) != 1 || versions[0] != mcpProtocolVersion {
 			writer.Header().Set("Content-Type", "application/json")
 			writer.Header().Set("Mcp-Protocol-Version", mcpProtocolVersion)
 			writer.WriteHeader(http.StatusBadRequest)

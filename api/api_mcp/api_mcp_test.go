@@ -163,18 +163,29 @@ func TestMCPRejectsMissingOrUnsupportedProtocolVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := `{"jsonrpc":"2.0","id":"version","method":"tools/call","params":{"name":"test","arguments":{}}}`
-	for _, version := range []string{"", "2025-11-25", " 2026-07-28 "} {
-		t.Run(version, func(t *testing.T) {
+	tests := []struct {
+		name     string
+		versions []string
+	}{
+		{name: "missing"},
+		{name: "old", versions: []string{"2025-11-25"}},
+		{name: "whitespace", versions: []string{" 2026-07-28 "}},
+		{name: "comma-combined", versions: []string{"2026-07-28, 2025-11-25"}},
+		{name: "duplicate-conflicting", versions: []string{"2026-07-28", "2025-11-25"}},
+		{name: "duplicate-identical", versions: []string{"2026-07-28", "2026-07-28"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
 			request := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(body))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set("Accept", "application/json, text/event-stream")
-			if version != "" {
-				request.Header.Set("Mcp-Protocol-Version", version)
+			for _, version := range test.versions {
+				request.Header.Add("Mcp-Protocol-Version", version)
 			}
 			response := httptest.NewRecorder()
 			handler.ServeHTTP(response, request)
 			if response.Code != http.StatusBadRequest {
-				t.Fatalf("version %q returned %d, want %d; body=%s", version, response.Code, http.StatusBadRequest, response.Body.String())
+				t.Fatalf("versions %#v returned %d, want %d; body=%s", test.versions, response.Code, http.StatusBadRequest, response.Body.String())
 			}
 			if response.Header().Get("Mcp-Protocol-Version") != mcpProtocolVersion {
 				t.Fatalf("supported protocol header = %q", response.Header().Get("Mcp-Protocol-Version"))
