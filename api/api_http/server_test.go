@@ -132,6 +132,25 @@ func TestAdminAuthErrorsAndWebNamespace(t *testing.T) {
 	}
 }
 
+func TestAdminAuthenticationRejectsAmbiguousAuthorizationHeaders(t *testing.T) {
+	s, _ := testServer(t)
+	h := s.Handler()
+	for _, values := range [][]string{
+		{"Bearer admin", "Bearer attacker"},
+		{"Bearer admin, Bearer attacker"},
+		{"Bearer  admin"},
+		{"bearer admin"},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/api/models", nil)
+		r.Header["Authorization"] = values
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("authorization values %#v accepted: %d %s", values, w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestMajorAdminRoutesAndJSONContract(t *testing.T) {
 	s, modelsRoot := testServer(t)
 	h := s.Handler()

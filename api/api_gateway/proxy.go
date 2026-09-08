@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/0xdevelop/vllm-use/internal/httpauth"
 )
 
 type Verifier interface {
@@ -163,14 +165,19 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	token := ""
-	h := r.Header.Get("Authorization")
-	if strings.HasPrefix(h, "Bearer ") {
-		token = strings.TrimPrefix(h, "Bearer ")
-	} else if strings.HasPrefix(r.URL.Path, "/v1/messages") {
-		token = r.Header.Get("X-API-Key")
+	authorizationPresent := httpauth.Present(r.Header, "Authorization")
+	apiKeyPresent := httpauth.Present(r.Header, "X-API-Key")
+	if authorizationPresent && apiKeyPresent {
+		write(w, http.StatusUnauthorized, "ambiguous credentials")
+		return
 	}
-	if token == "" {
+	token, validCredential := "", false
+	if authorizationPresent {
+		token, validCredential = httpauth.Bearer(r.Header)
+	} else if strings.HasPrefix(r.URL.Path, "/v1/messages") && apiKeyPresent {
+		token, validCredential = httpauth.SingleCredential(r.Header, "X-API-Key")
+	}
+	if !validCredential {
 		write(w, http.StatusUnauthorized, "missing bearer token")
 		return
 	}

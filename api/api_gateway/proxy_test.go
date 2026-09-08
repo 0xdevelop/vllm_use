@@ -70,6 +70,44 @@ func TestRoutingAuthStreamingAndErrors(t *testing.T) {
 	}
 }
 
+func TestGatewayRejectsAmbiguousClientCredentialsBeforeProxying(t *testing.T) {
+	u, _ := url.Parse("http://127.0.0.1:8000")
+	proxied := false
+	g := New(u, VerifyFunc(func(_ context.Context, key, scope string) (Principal, error) {
+		if key == "ok" && scope == "inference" {
+			return Principal{}, nil
+		}
+		return Principal{}, errors.New("bad auth")
+	}))
+	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		proxied = true
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: r}, nil
+	})
+
+	tests := []struct {
+		name   string
+		path   string
+		header http.Header
+	}{
+		{name: "duplicate bearer", path: "/v1/chat/completions", header: http.Header{"Authorization": {"Bearer ok", "Bearer attacker"}}},
+		{name: "combined bearer", path: "/v1/chat/completions", header: http.Header{"Authorization": {"Bearer ok, Bearer attacker"}}},
+		{name: "ambiguous anthropic schemes", path: "/v1/messages", header: http.Header{"Authorization": {"Bearer ok"}, "X-Api-Key": {"ok"}}},
+		{name: "duplicate anthropic key", path: "/v1/messages", header: http.Header{"X-Api-Key": {"ok", "attacker"}}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			proxied = false
+			req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(`{}`))
+			req.Header = tc.header
+			w := httptest.NewRecorder()
+			g.ServeHTTP(w, req)
+			if w.Code != http.StatusUnauthorized || proxied {
+				t.Fatalf("ambiguous credentials accepted: status=%d proxied=%v body=%s", w.Code, proxied, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestResponsesSuffixAnthropicAliasAndRecording(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:8000")
 	var mu sync.Mutex

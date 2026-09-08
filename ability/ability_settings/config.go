@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/0xdevelop/vllm-use/internal/httpauth"
 )
 
 type Config struct {
@@ -197,6 +199,12 @@ func (c Config) Validate() error {
 	if c.VLLMBinary == "" || c.HFCLI == "" {
 		return errors.New("vllm and hf executables are required")
 	}
+	if c.AdminToken != "" && !httpauth.ValidCredential(c.AdminToken) {
+		return errors.New("admin token must be at most 4096 bytes of visible ASCII without spaces or commas")
+	}
+	if c.UpstreamAPIKey != "" && !httpauth.ValidCredential(c.UpstreamAPIKey) {
+		return errors.New("upstream API key must be at most 4096 bytes of visible ASCII without spaces or commas")
+	}
 	u, err := url.Parse(c.Upstream)
 	if err != nil || u.Scheme == "" || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") {
 		return errors.New("upstream must be an absolute HTTP(S) URL")
@@ -303,13 +311,8 @@ func readBootstrapToken(path string) (string, error) {
 		return "", errors.New("bootstrap token file changed while being read")
 	}
 	token := string(b)
-	if len(token) < 32 || len(token) > 4096 || strings.TrimSpace(token) != token {
+	if len(token) < 32 || !httpauth.ValidCredential(token) {
 		return "", errors.New("bootstrap token file is invalid")
-	}
-	for _, r := range token {
-		if unicode.IsControl(r) {
-			return "", errors.New("bootstrap token file contains control characters")
-		}
 	}
 	return token, nil
 }

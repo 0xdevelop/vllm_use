@@ -9,7 +9,7 @@
 - `/api/*`：供 React Web Admin 和运维客户端使用的资源化 HTTP 路由。
 - `POST /mcp`：MCP `2026-07-28` stateless Streamable HTTP，使用官方 Go SDK。
 
-两者都必须完成 Bearer 认证，并将授权信息写入 context，然后进入同一条调用链：
+两者都必须完成 Bearer 认证，并将授权信息写入 context，然后进入同一条调用链。认证只接受单个规范的 `Authorization: Bearer <token>`；重复或逗号合并的认证头会 fail closed：
 
 ```text
 Adapter → api_executer.ExecuteAbility/APIExecuter
@@ -42,7 +42,7 @@ SQLite 是持久化真相源。启动时数据库路径必须是普通文件且�
 
 ## 推理数据面
 
-`/v1/*` 是独立的推理 Gateway Adapter，校验 `inference` scope 后反向代理到配置的 vLLM upstream。upstream 配置只能是无凭据、无路径/查询/fragment 的 loopback HTTP(S) origin，且连接不使用宿主机 `HTTP_PROXY` / `HTTPS_PROXY`，确保数据面直连本机受管 vLLM，而不是被误配或被环境代理重定向到远端。它支持：
+`/v1/*` 是独立的推理 Gateway Adapter，校验 `inference` scope 后反向代理到配置的 vLLM upstream。它只接受单个规范 Bearer 凭据；Anthropic 端点可改用单个 `X-API-Key`，但两种认证同时出现、重复或逗号合并时都会拒绝。upstream 配置只能是无凭据、无路径/查询/fragment 的 loopback HTTP(S) origin，且连接不使用宿主机 `HTTP_PROXY` / `HTTPS_PROXY`，确保数据面直连本机受管 vLLM，而不是被误配或被环境代理重定向到远端。它支持：
 
 - OpenAI Chat Completions、Completions、Responses、Embeddings 和 Models 端点。
 - Anthropic Messages 与 token counting 兼容端点。

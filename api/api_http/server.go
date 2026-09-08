@@ -18,6 +18,7 @@ import (
 	"github.com/0xdevelop/vllm-use/ability/ability_settings"
 	"github.com/0xdevelop/vllm-use/api/api_executer"
 	"github.com/0xdevelop/vllm-use/db/sqlite"
+	"github.com/0xdevelop/vllm-use/internal/httpauth"
 )
 
 type Server struct {
@@ -56,12 +57,12 @@ func (s *Server) mcp(next http.Handler) http.Handler {
 			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 			return
 		}
-		raw := r.Header.Get("Authorization")
-		if !strings.HasPrefix(raw, "Bearer ") || s.Keys == nil {
+		token, ok := httpauth.Bearer(r.Header)
+		if !ok || s.Keys == nil {
 			unauthorized(w)
 			return
 		}
-		key, err := s.Keys.Verify(r.Context(), strings.TrimPrefix(raw, "Bearer "), "")
+		key, err := s.Keys.Verify(r.Context(), token, "")
 		if err != nil || !hasMCPScope(key.Scopes) {
 			unauthorized(w)
 			return
@@ -81,12 +82,11 @@ func hasMCPScope(scopes []string) bool {
 }
 func (s *Server) admin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		raw := r.Header.Get("Authorization")
-		if !strings.HasPrefix(raw, "Bearer ") {
+		token, ok := httpauth.Bearer(r.Header)
+		if !ok {
 			unauthorized(w)
 			return
 		}
-		token := strings.TrimPrefix(raw, "Bearer ")
 		if s.AdminToken != "" && len(token) == len(s.AdminToken) && subtle.ConstantTimeCompare([]byte(token), []byte(s.AdminToken)) == 1 {
 			next.ServeHTTP(w, r.WithContext(api_executer.WithAdmin(r.Context())))
 			return

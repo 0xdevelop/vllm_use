@@ -37,6 +37,32 @@ func TestValidationAndLoopback(t *testing.T) {
 	}
 }
 
+func TestValidationRejectsUnsafeHTTPHeaderCredentials(t *testing.T) {
+	d := t.TempDir()
+	base := Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", Upstream: "http://127.0.0.1:8000", ReadinessTimeout: time.Second, ShutdownGrace: time.Second, MaxDownloadWorkers: 1, MaxAuditRecords: 100}
+	for _, tc := range []struct {
+		name     string
+		admin    string
+		upstream string
+	}{
+		{name: "admin whitespace", admin: "admin token"},
+		{name: "admin control", admin: "admin\nheader"},
+		{name: "admin oversized", admin: strings.Repeat("a", 4097)},
+		{name: "upstream whitespace", upstream: "upstream token"},
+		{name: "upstream control", upstream: "upstream\rheader"},
+		{name: "upstream oversized", upstream: strings.Repeat("a", 4097)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config := base
+			config.AdminToken = tc.admin
+			config.UpstreamAPIKey = tc.upstream
+			if err := config.Validate(); err == nil {
+				t.Fatal("unsafe credential was accepted")
+			}
+		})
+	}
+}
+
 func TestValidationRestrictsManagedVLLMUpstreamToLoopbackRoot(t *testing.T) {
 	d := t.TempDir()
 	base := Config{Listen: "127.0.0.1:8080", DataDir: d, Database: filepath.Join(d, "db"), ModelsDir: filepath.Join(d, "models"), VLLMBinary: "vllm", HFCLI: "hf", ReadinessTimeout: time.Second, ShutdownGrace: time.Second, MaxDownloadWorkers: 1, MaxAuditRecords: 100}
@@ -333,6 +359,8 @@ func TestEnsureAdminTokenRejectsUnsafeCredentialFiles(t *testing.T) {
 
 	for name, token := range map[string]string{
 		"trailing_newline": strings.Repeat("c", 40) + "\n",
+		"embedded_space":   strings.Repeat("c", 20) + " " + strings.Repeat("c", 20),
+		"embedded_comma":   strings.Repeat("c", 20) + "," + strings.Repeat("c", 20),
 		"too_short":        "short",
 		"too_large":        strings.Repeat("d", 4097),
 	} {
