@@ -220,12 +220,12 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 		d.mu.Unlock()
 		return nil, errors.New("download service is shutting down")
 	}
-	if j := d.jobs[id]; j != nil && j.State == Running {
+	if j := d.jobs[id]; j != nil && (j.State == Running || j.State == Pending) {
 		d.mu.Unlock()
 		return nil, errors.New("download already running")
 	}
 	for _, existing := range d.jobs {
-		if existing.State == Running && filepath.Clean(existing.Destination) == filepath.Clean(dest) {
+		if (existing.State == Running || existing.State == Pending) && filepath.Clean(existing.Destination) == filepath.Clean(dest) {
 			d.mu.Unlock()
 			return nil, errors.New("download destination already in use")
 		}
@@ -239,28 +239,72 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 	// Downloads are service-owned asynchronous work: transport/request
 	// cancellation must not terminate them after an accepted response.
 	ctx, cancel := context.WithCancel(d.ctx)
-	j := &Job{ID: id, ModelID: modelID, Repo: repo, Revision: revision, Destination: dest, State: Running, cancel: cancel, secret: token}
-	now := time.Now().UTC()
-	j.StartedAt = &now
+	acquiredWorker := false
+	select {
+	case d.workers <- struct{}{}:
+		acquiredWorker = true
+	default:
+	}
+	state := Pending
+	if acquiredWorker {
+		state = Running
+	}
+	j := &Job{ID: id, ModelID: modelID, Repo: repo, Revision: revision, Destination: dest, State: state, cancel: cancel, secret: token}
+	if acquiredWorker {
+		now := time.Now().UTC()
+		j.StartedAt = &now
+	}
 	if err := d.persistAcceptanceLocked(parent, j); err != nil {
 		cancel()
+		if acquiredWorker {
+			<-d.workers
+		}
 		d.mu.Unlock()
 		return nil, fmt.Errorf("persist download acceptance: %w", err)
 	}
 	d.jobs[id] = j
 	d.wg.Add(1)
 	d.mu.Unlock()
+	if acquiredWorker {
+		if err := d.startCommand(j, ctx); err != nil {
+			return d.jobCopy(j), err
+		}
+	} else {
+		go d.awaitWorker(j, ctx)
+	}
+	return d.jobCopy(j), nil
+}
+
+// awaitWorker keeps accepted work pending instead of turning temporary worker
+// saturation into a failed model download. The job and its model claim are
+// already durable before this goroutine begins, so a restart can truthfully
+// mark an interrupted queue entry as canceled.
+func (d *Downloader) awaitWorker(j *Job, ctx context.Context) {
 	select {
 	case d.workers <- struct{}{}:
+		d.mu.Lock()
+		if ctx.Err() == nil && j.State == Pending {
+			j.State = Running
+			now := time.Now().UTC()
+			j.StartedAt = &now
+			d.persistLocked(j)
+		}
+		d.mu.Unlock()
+		if ctx.Err() != nil {
+			<-d.workers
+			_ = d.finish(j, Canceled, ctx.Err())
+			d.wg.Done()
+			return
+		}
+		_ = d.startCommand(j, ctx)
 	case <-ctx.Done():
 		_ = d.finish(j, Canceled, ctx.Err())
 		d.wg.Done()
-		return j, ctx.Err()
-	default:
-		_ = d.finish(j, Failed, errors.New("maximum concurrent downloads reached"))
-		d.wg.Done()
-		return j, errors.New("maximum concurrent downloads reached")
 	}
+}
+
+func (d *Downloader) startCommand(j *Job, ctx context.Context) error {
+	repo, revision, dest, token := j.Repo, j.Revision, j.Destination, j.secret
 	args := []string{"download", repo, "--local-dir", dest}
 	if revision != "" {
 		args = append(args, "--revision", revision)
@@ -276,28 +320,19 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 		}
 		x.SetEnv(env)
 	}
-	out, e := cmd.StdoutPipe()
-	if e != nil {
-		cancel()
-		<-d.workers
-		_ = d.finish(j, Failed, e)
-		d.wg.Done()
-		return j, e
+	out, err := cmd.StdoutPipe()
+	if err != nil {
+		d.failStart(j, err)
+		return err
 	}
-	errout, e := cmd.StderrPipe()
-	if e != nil {
-		cancel()
-		<-d.workers
-		_ = d.finish(j, Failed, e)
-		d.wg.Done()
-		return j, e
+	errout, err := cmd.StderrPipe()
+	if err != nil {
+		d.failStart(j, err)
+		return err
 	}
-	if e = cmd.Start(); e != nil {
-		cancel()
-		<-d.workers
-		_ = d.finish(j, Failed, e)
-		d.wg.Done()
-		return j, e
+	if err = cmd.Start(); err != nil {
+		d.failStart(j, err)
+		return err
 	}
 	pipeErrors := make(chan error, 2)
 	go func() { pipeErrors <- d.consume(j, out, token) }()
@@ -306,32 +341,43 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 		defer d.wg.Done()
 		var pipeErr error
 		for i := 0; i < 2; i++ {
-			if err := <-pipeErrors; err != nil && pipeErr == nil {
-				pipeErr = err
+			if consumeErr := <-pipeErrors; consumeErr != nil && pipeErr == nil {
+				pipeErr = consumeErr
 			}
 		}
 		// StdoutPipe/StderrPipe require reads to complete before Wait; calling
 		// Wait first can close a still-buffered pipe and turn a successful CLI
 		// run into a spurious "file already closed" failure.
-		e := cmd.Wait()
-		if e == nil {
-			e = pipeErr
+		waitErr := cmd.Wait()
+		if waitErr == nil {
+			waitErr = pipeErr
 		}
 		<-d.workers
 		if ctx.Err() != nil {
 			_ = d.finish(j, Canceled, ctx.Err())
-		} else if e != nil {
-			_ = d.finish(j, Failed, e)
+		} else if waitErr != nil {
+			_ = d.finish(j, Failed, waitErr)
 		} else {
 			_ = d.finish(j, Succeeded, nil)
 		}
 	}()
+	return nil
+}
+
+func (d *Downloader) failStart(j *Job, err error) {
+	<-d.workers
+	_ = d.finish(j, Failed, err)
+	d.wg.Done()
+}
+
+func (d *Downloader) jobCopy(j *Job) *Job {
 	d.mu.RLock()
+	defer d.mu.RUnlock()
 	response := *j
 	response.Logs = append([]string(nil), j.Logs...)
 	response.cancel = nil
-	d.mu.RUnlock()
-	return &response, nil
+	response.secret = ""
+	return &response
 }
 
 var pct = regexp.MustCompile(`([0-9]{1,3}(?:\.[0-9]+)?)%`)

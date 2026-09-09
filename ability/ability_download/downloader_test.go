@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,96 @@ type fakeRunner struct {
 	name  string
 	args  []string
 	calls int
+}
+
+type gatedCommand struct{ release <-chan struct{} }
+
+func (*gatedCommand) StdoutPipe() (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (*gatedCommand) StderrPipe() (io.ReadCloser, error) {
+	return io.NopCloser(strings.NewReader("")), nil
+}
+func (*gatedCommand) Start() error { return nil }
+func (c *gatedCommand) Wait() error {
+	<-c.release
+	return nil
+}
+
+type gatedRunner struct {
+	mu       sync.Mutex
+	releases []<-chan struct{}
+	calls    int
+}
+
+func (r *gatedRunner) CommandContext(context.Context, string, ...string) Command {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	index := r.calls
+	r.calls++
+	return &gatedCommand{release: r.releases[index]}
+}
+
+func (r *gatedRunner) Calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+func TestDownloadQueuesWhenWorkersAreBusy(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"first", "second"} {
+		destination := filepath.Join(root, name)
+		if err := os.Mkdir(destination, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(destination, "weights"), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	firstRelease := make(chan struct{})
+	secondRelease := make(chan struct{})
+	runner := &gatedRunner{releases: []<-chan struct{}{firstRelease, secondRelease}}
+	downloader := NewWithOptions("hf", runner, 1, 100)
+	downloader.SetRoot(root)
+	downloader.SetStore(store)
+
+	first, err := downloader.Download(context.Background(), "first", "org/first", filepath.Join(root, "first"), "")
+	if err != nil || first.State != Running || first.StartedAt == nil {
+		t.Fatalf("first download = %#v, err=%v", first, err)
+	}
+	second, err := downloader.Download(context.Background(), "second", "org/second", filepath.Join(root, "second"), "")
+	if err != nil || second.State != Pending || second.StartedAt != nil {
+		t.Fatalf("queued download = %#v, err=%v", second, err)
+	}
+	if runner.Calls() != 1 {
+		t.Fatalf("queued command started before a worker was free: calls=%d", runner.Calls())
+	}
+	var durableState string
+	var durableStarted *string
+	if err = store.DB.QueryRow(`SELECT state,started_at FROM downloads WHERE id='second'`).Scan(&durableState, &durableStarted); err != nil {
+		t.Fatal(err)
+	}
+	if durableState != string(Pending) || durableStarted != nil {
+		t.Fatalf("durable queued state=%q started=%v", durableState, durableStarted)
+	}
+
+	close(firstRelease)
+	waitForState(t, downloader, "first", Succeeded)
+	waitForState(t, downloader, "second", Running)
+	if runner.Calls() != 2 {
+		t.Fatalf("queued command did not start after worker release: calls=%d", runner.Calls())
+	}
+	close(secondRelease)
+	waitForState(t, downloader, "second", Succeeded)
+	if err = downloader.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestDownloadDestinationStaysInsideRoot(t *testing.T) {
