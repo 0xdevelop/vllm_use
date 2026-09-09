@@ -87,11 +87,11 @@ type Downloader struct {
 	terminalErr error
 }
 
-func (d *Downloader) SetStore(s *sqlite.Store) {
+func (d *Downloader) SetStore(s *sqlite.Store) error {
 	d.mu.Lock()
 	d.store = s
 	d.mu.Unlock()
-	d.restore()
+	return d.restore()
 }
 func (d *Downloader) SetRoot(root string) { d.mu.Lock(); d.root = filepath.Clean(root); d.mu.Unlock() }
 func (d *Downloader) SetHFHome(home string) {
@@ -659,48 +659,84 @@ func (d *Downloader) List() []Job {
 	return out
 }
 
-func (d *Downloader) restore() {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	if d.store == nil {
-		return
+func (d *Downloader) restore() error {
+	d.mu.RLock()
+	store := d.store
+	d.mu.RUnlock()
+	if store == nil {
+		return nil
 	}
-	rows, err := d.store.DB.Query(`SELECT id,COALESCE(model_id,''),repository,revision,destination,state,progress,error,logs,started_at,finished_at FROM downloads ORDER BY id`)
+	rows, err := store.DB.Query(`SELECT id,COALESCE(model_id,''),repository,revision,destination,state,progress,error,logs,started_at,finished_at FROM downloads ORDER BY id`)
 	if err != nil {
-		return
+		return fmt.Errorf("read persisted downloads: %w", err)
 	}
-	defer rows.Close()
+	type restoredJob struct {
+		job         Job
+		interrupted bool
+	}
+	var restored []restoredJob
 	for rows.Next() {
 		var j Job
 		var state, logs string
 		var started, finished *string
-		if rows.Scan(&j.ID, &j.ModelID, &j.Repo, &j.Revision, &j.Destination, &state, &j.Progress, &j.Error, &logs, &started, &finished) != nil {
-			continue
+		if err = rows.Scan(&j.ID, &j.ModelID, &j.Repo, &j.Revision, &j.Destination, &state, &j.Progress, &j.Error, &logs, &started, &finished); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan persisted download: %w", err)
 		}
 		j.State = State(state)
-		if j.State == Running || j.State == Pending {
+		interrupted := j.State == Running || j.State == Pending
+		if err = json.Unmarshal([]byte(logs), &j.Logs); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("decode persisted download %q logs: %w", j.ID, err)
+		}
+		if started != nil {
+			v, parseErr := time.Parse(time.RFC3339Nano, *started)
+			if parseErr != nil {
+				_ = rows.Close()
+				return fmt.Errorf("parse persisted download %q start time: %w", j.ID, parseErr)
+			}
+			j.StartedAt = &v
+		}
+		if finished != nil {
+			v, parseErr := time.Parse(time.RFC3339Nano, *finished)
+			if parseErr != nil {
+				_ = rows.Close()
+				return fmt.Errorf("parse persisted download %q finish time: %w", j.ID, parseErr)
+			}
+			j.FinishedAt = &v
+		}
+		if interrupted {
 			j.State, j.Error = Canceled, "interrupted by service restart"
 			now := time.Now().UTC()
 			j.FinishedAt = &now
 		}
-		_ = json.Unmarshal([]byte(logs), &j.Logs)
-		if started != nil {
-			if v, e := time.Parse(time.RFC3339Nano, *started); e == nil {
-				j.StartedAt = &v
-			}
-		}
-		if finished != nil {
-			if v, e := time.Parse(time.RFC3339Nano, *finished); e == nil {
-				j.FinishedAt = &v
-			}
-		}
-		d.jobs[j.ID] = &j
-		if state == string(Running) || state == string(Pending) {
-			if err := d.persistTerminalLocked(&j, "", 0); err != nil {
-				d.terminalErr = errors.Join(d.terminalErr, fmt.Errorf("persist interrupted download state: %w", err))
-			}
-		}
+		restored = append(restored, restoredJob{job: j, interrupted: interrupted})
 	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("read persisted downloads: %w", err)
+	}
+	// Close the SELECT cursor before terminal-state transactions. Restore must
+	// work with a one-connection SQLite pool instead of waiting for a connection
+	// still owned by its own read cursor.
+	if err = rows.Close(); err != nil {
+		return fmt.Errorf("close persisted download cursor: %w", err)
+	}
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for i := range restored {
+		j := &restored[i].job
+		if restored[i].interrupted {
+			if err = d.persistTerminalLocked(j, "", 0); err != nil {
+				wrapped := fmt.Errorf("persist interrupted download state: %w", err)
+				d.terminalErr = errors.Join(d.terminalErr, wrapped)
+				return wrapped
+			}
+		}
+		d.jobs[j.ID] = j
+	}
+	return nil
 }
 func (d *Downloader) Logs(id string) ([]string, error) {
 	j, ok := d.Status(id)

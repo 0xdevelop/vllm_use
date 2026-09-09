@@ -867,6 +867,67 @@ func TestListOrderingAndPersistedRestore(t *testing.T) {
 	}
 }
 
+func TestRestoreClosesReadCursorBeforePersistingInterruptedJobs(t *testing.T) {
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A restore must not rely on spare SQLite connections: the production pool
+	// is deliberately bounded and operators may further constrain it.
+	st.DB.SetMaxOpenConns(1)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = st.DB.Exec(`INSERT INTO downloads(id,repository,destination,state,progress,error,logs,created_at,updated_at) VALUES('interrupted','org/model','/models/interrupted','pending',0,'','[]',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+	done := make(chan error, 1)
+	go func() { done <- d.SetStore(st) }()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatalf("restore failed: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("restore blocked while its download SELECT cursor held the only SQLite connection")
+	}
+	defer st.Close()
+
+	job, ok := d.Status("interrupted")
+	if !ok || job.State != Canceled || !strings.Contains(job.Error, "service restart") {
+		t.Fatalf("restored job = %#v", job)
+	}
+	var state string
+	if err = st.DB.QueryRow(`SELECT state FROM downloads WHERE id='interrupted'`).Scan(&state); err != nil || state != string(Canceled) {
+		t.Fatalf("durable restored state=%q err=%v", state, err)
+	}
+}
+
+func TestSetStoreSurfacesInterruptedStatePersistenceFailure(t *testing.T) {
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = st.DB.Exec(`INSERT INTO downloads(id,repository,destination,state,progress,error,logs,created_at,updated_at) VALUES('interrupted','org/model','/models/interrupted','running',0,'','[]',?,?)`, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DB.Exec(`CREATE TRIGGER reject_restore BEFORE UPDATE ON downloads WHEN NEW.id='interrupted' AND NEW.state='canceled' BEGIN SELECT RAISE(FAIL, 'injected restore failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+	err = d.SetStore(st)
+	if err == nil || !strings.Contains(err.Error(), "persist interrupted download state") || !strings.Contains(err.Error(), "injected restore failure") {
+		t.Fatalf("restore persistence error = %v", err)
+	}
+	var state string
+	if queryErr := st.DB.QueryRow(`SELECT state FROM downloads WHERE id='interrupted'`).Scan(&state); queryErr != nil || state != string(Running) {
+		t.Fatalf("failed restore changed durable state=%q err=%v", state, queryErr)
+	}
+}
+
 func TestConcurrentDestinationRejected(t *testing.T) {
 	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
 	d.jobs["busy"] = &Job{ID: "busy", Destination: "/models/same", State: Running}
