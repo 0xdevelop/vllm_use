@@ -113,6 +113,62 @@ func TestDownloadQueuesWhenWorkersAreBusy(t *testing.T) {
 	}
 }
 
+func TestQueuedDownloadDoesNotStartWhenRunningStateCannotBePersisted(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"first", "second"} {
+		destination := filepath.Join(root, name)
+		if err := os.Mkdir(destination, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(destination, "weights"), []byte(name), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if _, err = store.DB.Exec(`CREATE TRIGGER reject_second_running BEFORE UPDATE ON downloads WHEN NEW.id='second' AND NEW.state='running' BEGIN SELECT RAISE(FAIL, 'injected running persistence failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+
+	firstRelease := make(chan struct{})
+	runner := &gatedRunner{releases: []<-chan struct{}{firstRelease}}
+	downloader := NewWithOptions("hf", runner, 1, 100)
+	downloader.SetRoot(root)
+	downloader.SetStore(store)
+	if _, err = downloader.Download(context.Background(), "first", "org/first", filepath.Join(root, "first"), ""); err != nil {
+		t.Fatal(err)
+	}
+	queued, err := downloader.Download(context.Background(), "second", "org/second", filepath.Join(root, "second"), "")
+	if err != nil || queued.State != Pending {
+		t.Fatalf("queued download = %#v, err=%v", queued, err)
+	}
+
+	close(firstRelease)
+	waitForState(t, downloader, "first", Succeeded)
+	waitForState(t, downloader, "second", Failed)
+	if runner.Calls() != 1 {
+		t.Fatalf("host CLI started despite failed running-state persistence: calls=%d", runner.Calls())
+	}
+	job, _ := downloader.Status("second")
+	if job.StartedAt != nil || !strings.Contains(job.Error, "persist queued download start") {
+		t.Fatalf("failed queued job = %#v", job)
+	}
+	var durableState, durableError string
+	var durableStarted *string
+	if err = store.DB.QueryRow(`SELECT state,error,started_at FROM downloads WHERE id='second'`).Scan(&durableState, &durableError, &durableStarted); err != nil {
+		t.Fatal(err)
+	}
+	if durableState != string(Failed) || durableStarted != nil || !strings.Contains(durableError, "persist queued download start") {
+		t.Fatalf("durable queued failure state=%q started=%v error=%q", durableState, durableStarted, durableError)
+	}
+	if err = downloader.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDownloadDestinationStaysInsideRoot(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

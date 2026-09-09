@@ -287,7 +287,18 @@ func (d *Downloader) awaitWorker(j *Job, ctx context.Context) {
 			j.State = Running
 			now := time.Now().UTC()
 			j.StartedAt = &now
-			d.persistLocked(j)
+			if err := d.persistLocked(j); err != nil {
+				// A queued job must become durably running before the host CLI is
+				// launched. Otherwise a crash can restore it as merely pending while
+				// an untracked process continues writing model files.
+				j.State = Pending
+				j.StartedAt = nil
+				<-d.workers
+				d.mu.Unlock()
+				_ = d.finish(j, Failed, fmt.Errorf("persist queued download start: %w", err))
+				d.wg.Done()
+				return
+			}
 		}
 		d.mu.Unlock()
 		if ctx.Err() != nil {
@@ -756,7 +767,11 @@ func (d *Downloader) Shutdown(ctx context.Context) error {
 	}
 }
 
-func (d *Downloader) persist(j *Job) { d.mu.RLock(); defer d.mu.RUnlock(); d.persistLocked(j) }
+func (d *Downloader) persist(j *Job) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	_ = d.persistLocked(j)
+}
 
 // persistAcceptanceLocked makes the accepted job and its linked model state
 // durable in one transaction before any host process is started. An
@@ -805,9 +820,9 @@ func (d *Downloader) persistAcceptanceLocked(ctx context.Context, j *Job) error 
 
 const downloadUpsertSQL = `INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET model_id=excluded.model_id,repository=excluded.repository,revision=excluded.revision,destination=excluded.destination,state=excluded.state,progress=excluded.progress,error=excluded.error,logs=excluded.logs,started_at=excluded.started_at,finished_at=excluded.finished_at,updated_at=excluded.updated_at`
 
-func (d *Downloader) persistLocked(j *Job) {
+func (d *Downloader) persistLocked(j *Job) error {
 	if d.store == nil {
-		return
+		return nil
 	}
 	logs, _ := json.Marshal(j.Logs)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -818,7 +833,8 @@ func (d *Downloader) persistLocked(j *Job) {
 	if j.FinishedAt != nil {
 		finished = j.FinishedAt.Format(time.RFC3339Nano)
 	}
-	_, _ = d.store.DB.ExecContext(context.Background(), downloadUpsertSQL, j.ID, nullValue(j.ModelID), j.Repo, j.Revision, j.Destination, string(j.State), j.Progress, j.Error, string(logs), started, finished, now, now)
+	_, err := d.store.DB.ExecContext(context.Background(), downloadUpsertSQL, j.ID, nullValue(j.ModelID), j.Repo, j.Revision, j.Destination, string(j.State), j.Progress, j.Error, string(logs), started, finished, now, now)
+	return err
 }
 
 // persistTerminalLocked publishes a linked download's terminal job and model
