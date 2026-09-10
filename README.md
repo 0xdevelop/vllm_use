@@ -89,4 +89,6 @@ HTTP / MCP Adapter → APIExecuter → Supported Methods Registry → Ability
 - Ability 方法清单：[`docs/api_methods.md`](docs/api_methods.md)，由 `./gen_api_docs.sh` 生成，禁止手改
 - Web Admin：`web/`，使用 Bun；生产构建输出由 Go embed 打入二进制
 
-常规后端质量门：`go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`。发布只能使用 `./git_tag.sh`。
+常规后端质量门：`go test ./...`、`go test -race ./...`、`go vet ./...`、`go build ./...`。
+
+发布只能从干净的 `main` 运行 `./git_tag.sh`：脚本统一更新版本、生成 changelog/API 文档、提交并推送版本 tag。tag 触发的 Release workflow 会再次执行固定版本的 Bun 前端门禁、生成物校验、Go test/race/vet/build 和发布包内容校验，全部通过后才创建 GitHub Release；不得手改版本或手工创建 tag/release。
