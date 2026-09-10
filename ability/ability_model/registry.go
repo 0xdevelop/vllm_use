@@ -18,6 +18,7 @@ import (
 
 	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
 	"github.com/0xdevelop/vllm-use/db/sqlite"
+	"github.com/0xdevelop/vllm-use/internal/huggingface"
 )
 
 const MethodList = "models.list"
@@ -75,24 +76,18 @@ func newID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func validateRepo(repo string) error {
-	repo = strings.TrimSpace(repo)
-	parts := strings.Split(repo, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.HasPrefix(repo, "-") || strings.ContainsAny(repo, "\\\x00\n\r\t ") || strings.Contains(repo, "..") {
-		return errors.New("invalid repository; expected owner/name")
-	}
-	return nil
-}
 func (r *Registry) AddHuggingFace(ctx context.Context, repo string) (Model, error) {
 	return r.RegisterHuggingFace(ctx, repo, "")
 }
 func (r *Registry) RegisterHuggingFace(ctx context.Context, repo, revision string) (Model, error) {
-	repo, revision = strings.TrimSpace(repo), strings.TrimSpace(revision)
-	if err := validateRepo(repo); err != nil {
+	var err error
+	repo, err = huggingface.NormalizeRepository(repo)
+	if err != nil {
 		return Model{}, err
 	}
-	if strings.HasPrefix(revision, "-") || strings.ContainsAny(revision, "\x00\n\r") {
-		return Model{}, errors.New("invalid revision")
+	revision, err = huggingface.NormalizeRevision(revision)
+	if err != nil {
+		return Model{}, err
 	}
 	return r.add(ctx, Model{Name: filepath.Base(repo), Kind: "huggingface", Source: repo, Repository: repo, Revision: revision, Status: "registered"})
 }

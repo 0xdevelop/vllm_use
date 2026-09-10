@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
+	"github.com/0xdevelop/vllm-use/internal/huggingface"
 )
 
 const (
@@ -33,7 +34,7 @@ func LoadManagementMethods() {
 		}
 		return registry().Get(ctx, in.ID)
 	})
-	add(MethodRegisterHF, "注册 Hugging Face 模型", map[string]interface{}{"repository": stringSchema(), "revision": stringSchema()}, []string{"repository"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+	add(MethodRegisterHF, "注册 Hugging Face 模型", map[string]interface{}{"repository": boundedStringSchema(huggingface.MaxRepositoryBytes), "revision": boundedStringSchema(huggingface.MaxRevisionBytes)}, []string{"repository"}, func(ctx context.Context, input interface{}) (interface{}, error) {
 		var in struct {
 			Repository string `json:"repository"`
 			Revision   string `json:"revision"`
@@ -86,3 +87,6 @@ func add(name, description string, properties map[string]interface{}, required [
 	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{Name: name, Description: description, Scope: "mcp.models", InputSchema: api_supported_methods.ObjectSchema(properties, required), Execute: execute})
 }
 func stringSchema() map[string]interface{} { return map[string]interface{}{"type": "string"} }
+func boundedStringSchema(maxLength int) map[string]interface{} {
+	return map[string]interface{}{"type": "string", "maxLength": maxLength}
+}

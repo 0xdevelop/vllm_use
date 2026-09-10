@@ -117,6 +117,38 @@ func TestRegistryBoundariesAndCRUD(t *testing.T) {
 	}
 }
 
+func TestRegisterHuggingFaceRejectsInputsTheDownloaderCannotUse(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "models")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	registry := New(store, root)
+
+	for _, tc := range []struct {
+		name, repository, revision string
+	}{
+		{"repository characters", "组织/model", "main"},
+		{"repository suffix", "org/model.git", "main"},
+		{"revision whitespace", "org/model", "feature branch"},
+		{"revision option", "org/model", "--local-dir"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := registry.RegisterHuggingFace(context.Background(), tc.repository, tc.revision); err == nil {
+				t.Fatal("registration unexpectedly succeeded")
+			}
+		})
+	}
+	var count int
+	if err = store.DB.QueryRow(`SELECT COUNT(*) FROM models`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rejected registrations persisted rows: count=%d err=%v", count, err)
+	}
+}
+
 func TestReconcileDeletionQuarantineRestoresOrPurgesByDatabaseTruth(t *testing.T) {
 	ctx := context.Background()
 	root := filepath.Join(t.TempDir(), "models")

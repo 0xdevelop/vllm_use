@@ -20,6 +20,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/0xdevelop/vllm-use/db/sqlite"
+	"github.com/0xdevelop/vllm-use/internal/huggingface"
 	"github.com/0xdevelop/vllm-use/internal/processenv"
 )
 
@@ -179,14 +180,14 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 	if len(token) > 4096 || strings.ContainsAny(token, "\x00\n\r") {
 		return nil, errors.New("invalid download token")
 	}
-	repo = strings.TrimSpace(repo)
-	revision := strings.TrimSpace(request.Revision)
-	parts := strings.Split(repo, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.HasPrefix(repo, "-") || strings.ContainsAny(repo, " \\\x00\n\r\t") || strings.Contains(repo, "..") {
-		return nil, errors.New("invalid repo")
+	var err error
+	repo, err = huggingface.NormalizeRepository(repo)
+	if err != nil {
+		return nil, err
 	}
-	if strings.HasPrefix(revision, "-") || strings.ContainsAny(revision, "\x00\n\r\t ") {
-		return nil, errors.New("invalid revision")
+	revision, err := huggingface.NormalizeRevision(request.Revision)
+	if err != nil {
+		return nil, err
 	}
 	d.mu.RLock()
 	root := d.root

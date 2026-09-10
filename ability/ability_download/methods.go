@@ -62,7 +62,7 @@ func LoadAPIMethods() {
 		err = downloader().Cancel(id)
 		return map[string]bool{"canceled": err == nil}, err
 	})
-	add(MethodRetry, "重试下载", map[string]interface{}{"id": str(), "token": str()}, []string{"id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+	add(MethodRetry, "重试下载", map[string]interface{}{"id": str(), "token": boundedString(4096)}, []string{"id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
 		var in struct {
 			ID    string `json:"id"`
 			Token string `json:"token"`
@@ -75,7 +75,11 @@ func LoadAPIMethods() {
 }
 
 func requestProperties() map[string]interface{} {
-	return map[string]interface{}{"id": str(), "model_id": str(), "token": str()}
+	return map[string]interface{}{
+		"id":       str(),
+		"model_id": str(),
+		"token":    boundedString(4096),
+	}
 }
 func inputID(input interface{}) (string, error) {
 	var in struct {
@@ -94,3 +98,6 @@ func add(name, description string, properties map[string]interface{}, required [
 	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{Name: name, Description: description, Scope: "mcp.models", InputSchema: api_supported_methods.ObjectSchema(properties, required), Async: name == MethodStart, Execute: execute})
 }
 func str() map[string]interface{} { return map[string]interface{}{"type": "string"} }
+func boundedString(maxLength int) map[string]interface{} {
+	return map[string]interface{}{"type": "string", "maxLength": maxLength}
+}

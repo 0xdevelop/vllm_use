@@ -210,6 +210,23 @@ func TestDownloadDestinationStaysInsideRoot(t *testing.T) {
 	}
 }
 
+func TestDownloadRejectsInvalidHuggingFaceCoordinatesBeforeHostExecution(t *testing.T) {
+	for _, request := range []Request{
+		{ID: "unicode-repository", Repository: "组织/model", Destination: "/models/model"},
+		{ID: "git-suffix", Repository: "org/model.git", Destination: "/models/model"},
+		{ID: "revision-whitespace", Repository: "org/model", Revision: "feature branch", Destination: "/models/model"},
+	} {
+		runner := &fakeRunner{cmd: &fakeCmd{}}
+		downloader := New("hf", runner)
+		if _, err := downloader.DownloadRequest(context.Background(), request); err == nil {
+			t.Fatalf("DownloadRequest(%#v) unexpectedly succeeded", request)
+		}
+		if runner.calls != 0 || len(downloader.List()) != 0 {
+			t.Fatalf("invalid coordinates reached host execution: calls=%d jobs=%d", runner.calls, len(downloader.List()))
+		}
+	}
+}
+
 func (f *fakeRunner) CommandContext(_ context.Context, n string, a ...string) Command {
 	f.calls++
 	f.name = n

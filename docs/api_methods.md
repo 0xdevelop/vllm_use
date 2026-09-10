@@ -130,9 +130,11 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
   "additionalProperties": false,
   "properties": {
     "repository": {
+      "maxLength": 96,
       "type": "string"
     },
     "revision": {
+      "maxLength": 255,
       "type": "string"
     }
   },
@@ -273,6 +275,7 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
       "type": "string"
     },
     "token": {
+      "maxLength": 4096,
       "type": "string"
     }
   },
@@ -395,6 +398,7 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
       "type": "string"
     },
     "token": {
+      "maxLength": 4096,
       "type": "string"
     }
   },
