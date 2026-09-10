@@ -13,7 +13,6 @@ type SupportedMethod struct {
 	Name        string
 	Description string
 	InputSchema map[string]interface{}
-	Async       bool
 	Scope       string
 	// Public is metadata for adapters that choose to expose unauthenticated
 	// methods. Product management methods remain protected by their adapter.

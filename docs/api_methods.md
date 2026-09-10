@@ -165,6 +165,7 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
   "additionalProperties": false,
   "properties": {
     "name": {
+      "maxLength": 256,
       "type": "string"
     },
     "path": {
@@ -248,8 +249,6 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 ## 6.2. downloads.start
 
 从已登记模型启动下载
-
-异步方法：受理后返回 `task_id`，进度与结果经任务查询方法读取。
 
 `arguments` 传参举例（仅含必填字段）：
 

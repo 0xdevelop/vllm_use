@@ -117,6 +117,40 @@ func TestRegistryBoundariesAndCRUD(t *testing.T) {
 	}
 }
 
+func TestRegisterLocalRejectsUnsafeDurableMetadataAndModelsRoot(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "models")
+	modelPath := filepath.Join(root, "safe-model")
+	if err := os.MkdirAll(modelPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	registry := New(store, root)
+
+	for _, tc := range []struct {
+		name string
+		path string
+	}{
+		{name: strings.Repeat("n", MaxModelNameBytes+1), path: modelPath},
+		{name: "line\nbreak", path: modelPath},
+		{name: string([]byte{'b', 'a', 'd', 0xff}), path: modelPath},
+		{name: "models-root", path: root},
+	} {
+		if _, err = registry.RegisterLocal(ctx, tc.name, tc.path); err == nil {
+			t.Fatalf("RegisterLocal accepted unsafe name/path: name=%q path=%q", tc.name, tc.path)
+		}
+	}
+
+	var count int
+	if err = store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM models`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rejected local registrations persisted rows: count=%d err=%v", count, err)
+	}
+}
+
 func TestRegisterHuggingFaceRejectsInputsTheDownloaderCannotUse(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "models")
 	if err := os.Mkdir(root, 0o700); err != nil {

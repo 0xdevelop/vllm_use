@@ -95,7 +95,7 @@ func downloader() *Downloader {
 	return currentDownloader
 }
 func add(name, description string, properties map[string]interface{}, required []string, execute func(context.Context, interface{}) (interface{}, error)) {
-	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{Name: name, Description: description, Scope: "mcp.models", InputSchema: api_supported_methods.ObjectSchema(properties, required), Async: name == MethodStart, Execute: execute})
+	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{Name: name, Description: description, Scope: "mcp.models", InputSchema: api_supported_methods.ObjectSchema(properties, required), Execute: execute})
 }
 func str() map[string]interface{} { return map[string]interface{}{"type": "string"} }
 func boundedString(maxLength int) map[string]interface{} {

@@ -15,13 +15,18 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 	"github.com/0xdevelop/vllm-use/internal/huggingface"
 )
 
-const MethodList = "models.list"
+const (
+	MethodList        = "models.list"
+	MaxModelNameBytes = 256
+)
 
 var currentRegistry *Registry
 
@@ -114,7 +119,22 @@ func (r *Registry) RegisterLocal(ctx context.Context, name, path string) (Model,
 	if name == "" {
 		name = filepath.Base(p)
 	}
+	if err = validateModelName(name); err != nil {
+		return Model{}, err
+	}
 	return r.add(ctx, Model{Name: name, Kind: "local", Source: p, LocalPath: p, SizeBytes: sz, Status: "ready"})
+}
+
+func validateModelName(name string) error {
+	if name == "" || len(name) > MaxModelNameBytes || !utf8.ValidString(name) {
+		return errors.New("model name must be valid UTF-8 up to 256 bytes")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return errors.New("model name must not contain control characters")
+		}
+	}
+	return nil
 }
 func (r *Registry) add(ctx context.Context, m Model) (Model, error) {
 	var err error
@@ -518,8 +538,8 @@ func (r *Registry) safeExisting(path string) (string, error) {
 		return "", fmt.Errorf("resolve model path: %w", err)
 	}
 	rel, err := filepath.Rel(root, p)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", errors.New("model path escapes models root")
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", errors.New("model path must be a child of models root")
 	}
 	return p, nil
 }

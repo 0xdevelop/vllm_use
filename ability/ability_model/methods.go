@@ -44,7 +44,7 @@ func LoadManagementMethods() {
 		}
 		return registry().RegisterHuggingFace(ctx, in.Repository, in.Revision)
 	})
-	add(MethodRegisterLocal, "注册本地模型", map[string]interface{}{"name": stringSchema(), "path": stringSchema()}, []string{"name", "path"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+	add(MethodRegisterLocal, "注册本地模型", map[string]interface{}{"name": boundedStringSchema(MaxModelNameBytes), "path": stringSchema()}, []string{"name", "path"}, func(ctx context.Context, input interface{}) (interface{}, error) {
 		var in struct {
 			Name string `json:"name"`
 			Path string `json:"path"`

@@ -114,9 +114,6 @@ func renderMethodBody(doc *strings.Builder, method *api_supported_methods.Suppor
 		doc.WriteString(method.Description)
 		doc.WriteString("\n")
 	}
-	if method.Async {
-		doc.WriteString("\n异步方法：受理后返回 `task_id`，进度与结果经任务查询方法读取。\n")
-	}
 	if method.InputSchema != nil {
 		if err := renderArgumentsExample(doc, method); err != nil {
 			return err
