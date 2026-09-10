@@ -188,9 +188,14 @@ func validSecret(secret string) bool {
 	}
 	return true
 }
-func has(v []string, x string) bool {
-	for _, s := range v {
-		if s == x || s == "mcp.admin" || (s == "admin.write" && x == "admin.read") {
+func has(scopes []string, required string) bool {
+	for _, scope := range scopes {
+		if scope == required || (scope == "admin.write" && required == "admin.read") {
+			return true
+		}
+		// MCP administration is an umbrella only inside the MCP namespace. It
+		// must never authenticate management HTTP or inference requests.
+		if scope == "mcp.admin" && strings.HasPrefix(required, "mcp.") {
 			return true
 		}
 	}

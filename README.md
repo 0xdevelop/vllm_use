@@ -32,7 +32,7 @@ go run . --listen 127.0.0.1:8080
 | `--health-interval` | `VLLM_USE_HEALTH_INTERVAL` | `200ms` |
 | `--mcp-allowed-origins` | `VLLM_USE_MCP_ALLOWED_ORIGINS` | 空 |
 
-管理 token 和可选上游凭据分别使用 `VLLM_USE_ADMIN_TOKEN` / `--admin-token` 与 `VLLM_USE_UPSTREAM_API_KEY` / `--upstream-api-key`。生产环境优先使用环境变量，避免 secret 出现在进程参数中。凭据必须是最多 4096 字节、无空白或逗号的可见 ASCII；认证只接受单个规范的 `Authorization: Bearer <token>`，Anthropic 端点也可改用单个 `X-API-Key`，重复、合并或同时提供两种凭据都会拒绝，避免代理链对歧义请求作出不同解释。`upstream` 必须是指向本机 vLLM 的 loopback HTTP(S) origin，不能包含凭据、路径、查询或 fragment；Gateway 连接明确忽略宿主机 `HTTP_PROXY` / `HTTPS_PROXY`，避免本地推理流量和可选上游凭据被环境代理重定向。这避免把受保护 Gateway 配成任意远端代理。模型别名可配置为 `chat=org/production-chat,embed=org/embedding`；Gateway 只改写请求 JSON 中精确匹配的 `model` 值，审计仍保留客户端使用的别名。重复、空白、含控制字符或超过边界的映射会使启动失败。推理审计默认只保留最近 10000 条，插入与裁剪在同一 SQLite 事务中完成；设为 `0` 后不再写入新记录，但不会删除已有历史。非法的数值、时长、路径、地址、Origin、凭据或模型别名会让进程在启动阶段明确失败，而不会静默回退。
+管理 token 和可选上游凭据分别使用 `VLLM_USE_ADMIN_TOKEN` / `--admin-token` 与 `VLLM_USE_UPSTREAM_API_KEY` / `--upstream-api-key`。生产环境优先使用环境变量，避免 secret 出现在进程参数中。凭据必须是最多 4096 字节、无空白或逗号的可见 ASCII；认证只接受单个规范的 `Authorization: Bearer <token>`，Anthropic 端点也可改用单个 `X-API-Key`，重复、合并或同时提供两种凭据都会拒绝，避免代理链对歧义请求作出不同解释。scope 权限不会跨协议扩大：`mcp.admin` 只统管 MCP tools，不等价于管理 HTTP 的 `admin.read` / `admin.write`，也不授予 Gateway 的 `inference`。`upstream` 必须是指向本机 vLLM 的 loopback HTTP(S) origin，不能包含凭据、路径、查询或 fragment；Gateway 连接明确忽略宿主机 `HTTP_PROXY` / `HTTPS_PROXY`，避免本地推理流量和可选上游凭据被环境代理重定向。这避免把受保护 Gateway 配成任意远端代理。模型别名可配置为 `chat=org/production-chat,embed=org/embedding`；Gateway 只改写请求 JSON 中精确匹配的 `model` 值，审计仍保留客户端使用的别名。重复、空白、含控制字符或超过边界的映射会使启动失败。推理审计默认只保留最近 10000 条，插入与裁剪在同一 SQLite 事务中完成；设为 `0` 后不再写入新记录，但不会删除已有历史。非法的数值、时长、路径、地址、Origin、凭据或模型别名会让进程在启动阶段明确失败，而不会静默回退。
 
 主要入口：
 

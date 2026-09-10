@@ -72,6 +72,30 @@ func TestKeyCRUDAndAdminScopeSemantics(t *testing.T) {
 	}
 }
 
+func TestMCPAdminScopeDoesNotEscapeTheMCPControlPlane(t *testing.T) {
+	s, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	m := New(s)
+	_, secret, err := m.Create(context.Background(), []string{"mcp.admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, scope := range []string{"mcp.read", "mcp.models", "mcp.runtime", "mcp.admin"} {
+		if _, err = m.Verify(context.Background(), secret, scope); err != nil {
+			t.Fatalf("mcp.admin did not imply %q: %v", scope, err)
+		}
+	}
+	for _, scope := range []string{"inference", "admin.read", "admin.write"} {
+		if _, err = m.Verify(context.Background(), secret, scope); !errors.Is(err, ErrInsufficientScope) {
+			t.Fatalf("mcp.admin escaped into %q: %v", scope, err)
+		}
+	}
+}
+
 func TestVerifyRejectsMalformedSecretsBeforeDatabaseWork(t *testing.T) {
 	s, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
 	if err != nil {

@@ -151,6 +151,19 @@ func TestAdminAuthenticationRejectsAmbiguousAuthorizationHeaders(t *testing.T) {
 	}
 }
 
+func TestMCPAdminKeyCannotAuthenticateToAdminHTTP(t *testing.T) {
+	s, _ := testServer(t)
+	_, secret, err := s.Keys.Create(context.Background(), []string{"mcp.admin"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	w := request(t, s.Handler(), http.MethodGet, "/api/models", secret, "")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("mcp.admin key crossed into admin HTTP: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestMajorAdminRoutesAndJSONContract(t *testing.T) {
 	s, modelsRoot := testServer(t)
 	h := s.Handler()
