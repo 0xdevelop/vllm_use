@@ -96,3 +96,39 @@ func TestRecordRequestWithLimitBoundsAuditHistory(t *testing.T) {
 		t.Fatalf("disabled recording changed history: recent=%+v err=%v", recent, err)
 	}
 }
+
+func TestSettingsAndAuditReadsRejectCorruptPersistedTimestamps(t *testing.T) {
+	t.Run("setting", func(t *testing.T) {
+		s, err := Open(filepath.Join(t.TempDir(), "db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if err = s.PutSettings(context.Background(), []Setting{{Key: "theme", Value: "dark"}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.DB.Exec(`UPDATE settings SET updated_at='not-a-time' WHERE key='theme'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.Settings(context.Background()); err == nil {
+			t.Fatal("corrupt setting timestamp was silently accepted")
+		}
+	})
+
+	t.Run("audit", func(t *testing.T) {
+		s, err := Open(filepath.Join(t.TempDir(), "db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.Close()
+		if err = s.RecordRequest(context.Background(), APIRequest{RequestID: "req", Method: "POST", Path: "/v1/responses", StatusCode: 200}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.DB.Exec(`UPDATE api_requests SET created_at='not-a-time'`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.RecentRequests(context.Background(), 10); err == nil {
+			t.Fatal("corrupt audit timestamp was silently accepted")
+		}
+	})
+}

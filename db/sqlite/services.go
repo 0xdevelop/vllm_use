@@ -77,7 +77,10 @@ func (s *Store) Settings(ctx context.Context) ([]Setting, error) {
 		if e = rows.Scan(&v.Key, &v.Value, &ts); e != nil {
 			return nil, e
 		}
-		v.UpdatedAt, _ = time.Parse(time.RFC3339Nano, ts)
+		v.UpdatedAt, e = time.Parse(time.RFC3339Nano, ts)
+		if e != nil {
+			return nil, fmt.Errorf("parse setting %q update time: %w", v.Key, e)
+		}
 		out = append(out, v)
 	}
 	return out, rows.Err()
@@ -228,7 +231,10 @@ func (s *Store) RecentRequests(ctx context.Context, limit int) ([]APIRequest, er
 		if e = rows.Scan(&v.AuditID, &v.RequestID, &v.Method, &v.Path, &v.Model, &v.StatusCode, &v.DurationMS, &v.KeyID, &v.RemoteAddr, &ts); e != nil {
 			return nil, e
 		}
-		v.CreatedAt, _ = time.Parse(time.RFC3339Nano, ts)
+		v.CreatedAt, e = time.Parse(time.RFC3339Nano, ts)
+		if e != nil {
+			return nil, fmt.Errorf("parse request audit %q creation time: %w", v.AuditID, e)
+		}
 		out = append(out, v)
 	}
 	return out, rows.Err()

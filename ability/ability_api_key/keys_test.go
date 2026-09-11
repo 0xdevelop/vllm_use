@@ -161,3 +161,64 @@ func TestVerifyDoesNotRequireSpareDatabaseConnection(t *testing.T) {
 		t.Fatal("successful verification did not publish last-used time")
 	}
 }
+
+func TestKeyReadsRejectCorruptPersistedTimestamps(t *testing.T) {
+	tests := []struct {
+		name   string
+		column string
+		read   func(*Manager, string) error
+	}{
+		{
+			name:   "verify created time",
+			column: "created_at",
+			read: func(m *Manager, secret string) error {
+				_, err := m.Verify(context.Background(), secret, "inference")
+				return err
+			},
+		},
+		{
+			name:   "verify last-used time",
+			column: "last_used_at",
+			read: func(m *Manager, secret string) error {
+				_, err := m.Verify(context.Background(), secret, "inference")
+				return err
+			},
+		},
+		{
+			name:   "list created time",
+			column: "created_at",
+			read: func(m *Manager, _ string) error {
+				_, err := m.List(context.Background())
+				return err
+			},
+		},
+		{
+			name:   "list last-used time",
+			column: "last_used_at",
+			read: func(m *Manager, _ string) error {
+				_, err := m.List(context.Background())
+				return err
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			m := New(s)
+			key, secret, err := m.Create(context.Background(), []string{"inference"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.DB.Exec(`UPDATE api_keys SET `+tc.column+`='not-a-time' WHERE id=?`, key.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err = tc.read(m, secret); err == nil {
+				t.Fatalf("corrupt %s was silently accepted", tc.column)
+			}
+		})
+	}
+}

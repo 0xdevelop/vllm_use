@@ -164,10 +164,13 @@ func (m *Manager) Verify(ctx context.Context, secret, need string) (*Key, error)
 	}
 	k.CreatedAt, e = time.Parse(time.RFC3339Nano, created)
 	if e != nil {
-		return nil, e
+		return nil, fmt.Errorf("parse API key %q creation time: %w", k.ID, e)
 	}
 	if last.Valid {
-		t, _ := time.Parse(time.RFC3339Nano, last.String)
+		t, parseErr := time.Parse(time.RFC3339Nano, last.String)
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse API key %q last-used time: %w", k.ID, parseErr)
+		}
 		k.LastUsedAt = &t
 	}
 	now := time.Now().UTC()
@@ -218,9 +221,15 @@ func (m *Manager) List(ctx context.Context) ([]Key, error) {
 		}
 		k.Enabled = en == 1
 		k.Scopes = strings.Split(scopes, ",")
-		k.CreatedAt, _ = time.Parse(time.RFC3339Nano, c)
+		k.CreatedAt, e = time.Parse(time.RFC3339Nano, c)
+		if e != nil {
+			return nil, fmt.Errorf("parse API key %q creation time: %w", k.ID, e)
+		}
 		if l.Valid {
-			t, _ := time.Parse(time.RFC3339Nano, l.String)
+			t, parseErr := time.Parse(time.RFC3339Nano, l.String)
+			if parseErr != nil {
+				return nil, fmt.Errorf("parse API key %q last-used time: %w", k.ID, parseErr)
+			}
 			k.LastUsedAt = &t
 		}
 		out = append(out, k)
