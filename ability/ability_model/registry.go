@@ -26,6 +26,8 @@ import (
 const (
 	MethodList        = "models.list"
 	MaxModelNameBytes = 256
+	maxModelIDBytes   = 128
+	maxModelPathBytes = 4096
 )
 
 var currentRegistry *Registry
@@ -151,7 +153,7 @@ func (r *Registry) add(ctx context.Context, m Model) (Model, error) {
 	return m, nil
 }
 func (r *Registry) Get(ctx context.Context, id string) (Model, error) {
-	return scanModel(r.store.DB.QueryRowContext(ctx, selectModel+` WHERE id=?`, id))
+	return scanModel(r.store.DB.QueryRowContext(ctx, selectModel+` WHERE id=?`, id), r.root)
 }
 
 // ResolveRuntimeModel revalidates the persisted model path at the last domain
@@ -191,7 +193,7 @@ const selectModel = `SELECT id,name,kind,source,repository,revision,COALESCE(loc
 
 type scanner interface{ Scan(...any) error }
 
-func scanModel(row scanner) (Model, error) {
+func scanModel(row scanner, root string) (Model, error) {
 	var m Model
 	var c, u string
 	err := row.Scan(&m.ID, &m.Name, &m.Kind, &m.Source, &m.Repository, &m.Revision, &m.LocalPath, &m.SizeBytes, &m.Status, &c, &u)
@@ -206,7 +208,114 @@ func scanModel(row scanner) (Model, error) {
 		return Model{}, fmt.Errorf("parse created time: %w", err)
 	}
 	m.UpdatedAt, err = time.Parse(time.RFC3339Nano, u)
-	return m, err
+	if err != nil {
+		return Model{}, fmt.Errorf("parse model %q update time: %w", m.ID, err)
+	}
+	if err = validatePersistedModel(root, m); err != nil {
+		return Model{}, fmt.Errorf("validate model %q: %w", m.ID, err)
+	}
+	return m, nil
+}
+
+func validatePersistedModel(root string, m Model) error {
+	if err := validateModelText("id", m.ID, maxModelIDBytes); err != nil {
+		return err
+	}
+	if m.Name != strings.TrimSpace(m.Name) {
+		return errors.New("name contains surrounding whitespace")
+	}
+	if err := validateModelName(m.Name); err != nil {
+		return err
+	}
+	if m.SizeBytes < 0 {
+		return errors.New("size must not be negative")
+	}
+	if m.UpdatedAt.Before(m.CreatedAt) {
+		return errors.New("update time precedes creation time")
+	}
+
+	switch m.Kind {
+	case "huggingface":
+		repository, err := huggingface.NormalizeRepository(m.Repository)
+		if err != nil || repository != m.Repository {
+			return errors.New("invalid Hugging Face repository")
+		}
+		revision, err := huggingface.NormalizeRevision(m.Revision)
+		if err != nil || revision != m.Revision {
+			return errors.New("invalid Hugging Face revision")
+		}
+		if m.Source != m.Repository {
+			return errors.New("Hugging Face source does not match repository")
+		}
+		if !validHuggingFaceStatus(m.Status) {
+			return errors.New("invalid Hugging Face status")
+		}
+		if m.Status == "ready" {
+			if m.LocalPath == "" {
+				return errors.New("ready Hugging Face model has no local path")
+			}
+		} else if m.LocalPath != "" || m.SizeBytes != 0 {
+			return errors.New("incomplete Hugging Face model has local artifacts")
+		}
+	case "local":
+		if m.Repository != "" || m.Revision != "" {
+			return errors.New("local model contains Hugging Face coordinates")
+		}
+		if m.Status != "ready" {
+			return errors.New("local model is not ready")
+		}
+		if m.LocalPath == "" || m.Source != m.LocalPath {
+			return errors.New("local model source does not match local path")
+		}
+	default:
+		return errors.New("invalid model kind")
+	}
+	if m.LocalPath != "" {
+		if err := validatePersistedModelPath(root, m.LocalPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validHuggingFaceStatus(status string) bool {
+	switch status {
+	case "registered", "downloading", "ready", "canceled", "failed", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateModelText(field, value string, maxBytes int) error {
+	if value == "" || len(value) > maxBytes || !utf8.ValidString(value) {
+		return fmt.Errorf("%s must be valid UTF-8 between 1 and %d bytes", field, maxBytes)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return fmt.Errorf("%s must not contain control characters", field)
+		}
+	}
+	return nil
+}
+
+func validatePersistedModelPath(root, path string) error {
+	if err := validateModelText("local path", path, maxModelPathBytes); err != nil {
+		return err
+	}
+	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+		return errors.New("local path must be canonical and absolute")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return errors.New("models root is invalid")
+	}
+	root = filepath.Clean(root)
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return errors.New("local path escapes models root")
+	}
+	return nil
 }
 func (r *Registry) List(ctx context.Context) ([]Model, error) {
 	rows, err := r.store.DB.QueryContext(ctx, selectModel+` ORDER BY created_at`)
@@ -216,7 +325,7 @@ func (r *Registry) List(ctx context.Context) ([]Model, error) {
 	defer rows.Close()
 	out := []Model{}
 	for rows.Next() {
-		m, e := scanModel(rows)
+		m, e := scanModel(rows, r.root)
 		if e != nil {
 			return nil, e
 		}

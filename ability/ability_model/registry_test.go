@@ -183,6 +183,96 @@ func TestRegisterHuggingFaceRejectsInputsTheDownloaderCannotUse(t *testing.T) {
 	}
 }
 
+func TestRegistryRejectsCorruptPersistedModelMetadata(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "models")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	registry := New(store, root)
+
+	model, err := registry.RegisterHuggingFace(ctx, "org/model", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		name   string
+		column string
+		value  any
+	}{
+		{name: "empty id", column: "id", value: ""},
+		{name: "invalid name", column: "name", value: "bad\nname"},
+		{name: "inconsistent kind", column: "kind", value: "local"},
+		{name: "source mismatch", column: "source", value: "other/model"},
+		{name: "invalid repository", column: "repository", value: "bad repository"},
+		{name: "invalid revision", column: "revision", value: "--local-dir"},
+		{name: "escaping local path", column: "local_path", value: filepath.Join(filepath.Dir(root), "outside")},
+		{name: "negative size", column: "size_bytes", value: -1},
+		{name: "unknown status", column: "status", value: "mystery"},
+		{name: "invalid created time", column: "created_at", value: "not-a-time"},
+		{name: "invalid updated time", column: "updated_at", value: "not-a-time"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			query := `UPDATE models SET ` + tc.column + `=? WHERE id=?`
+			if _, err := store.DB.Exec(query, tc.value, model.ID); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := registry.List(ctx); err == nil {
+				t.Fatal("List accepted corrupt persisted model metadata")
+			}
+			if _, err := store.DB.Exec(`DELETE FROM models`); err != nil {
+				t.Fatal(err)
+			}
+			model, err = registry.RegisterHuggingFace(ctx, "org/model", "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestRegistryRejectsCorruptPersistedLocalModelRelationships(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "models")
+	modelPath := filepath.Join(root, "local")
+	if err := os.MkdirAll(modelPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	registry := New(store, root)
+	model, err := registry.RegisterLocal(ctx, "local", modelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, mutation := range []string{
+		`UPDATE models SET repository='org/model' WHERE id=?`,
+		`UPDATE models SET source='different' WHERE id=?`,
+		`UPDATE models SET status='registered' WHERE id=?`,
+	} {
+		if _, err = store.DB.Exec(mutation, model.ID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = registry.Get(ctx, model.ID); err == nil {
+			t.Fatal("Get accepted corrupt persisted local model metadata")
+		}
+		if _, err = store.DB.Exec(`UPDATE models SET repository='',source=?,status='ready' WHERE id=?`, modelPath, model.ID); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestReconcileDeletionQuarantineRestoresOrPurgesByDatabaseTruth(t *testing.T) {
 	ctx := context.Background()
 	root := filepath.Join(t.TempDir(), "models")
