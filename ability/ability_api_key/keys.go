@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 	"golang.org/x/crypto/scrypt"
@@ -21,6 +23,8 @@ const (
 	secretPrefix        = "vu_"
 	secretRandomLength  = 48
 	displayedPrefixSize = 11
+	saltSize            = 16
+	hashSize            = 32
 )
 
 var ErrInvalidKey = errors.New("invalid API key")
@@ -78,8 +82,8 @@ func (m *Manager) CreateNamed(ctx context.Context, name string, scopes []string)
 		}
 	}
 	name = strings.TrimSpace(name)
-	if len(name) > 100 {
-		return Key{}, "", errors.New("key name too long")
+	if err := validateKeyName(name); err != nil {
+		return Key{}, "", err
 	}
 	for tries := 0; tries < 5; tries++ {
 		tail, e := random(secretRandomLength)
@@ -87,7 +91,7 @@ func (m *Manager) CreateNamed(ctx context.Context, name string, scopes []string)
 			return Key{}, "", e
 		}
 		secret := secretPrefix + tail
-		salt := make([]byte, 16)
+		salt := make([]byte, saltSize)
 		if _, e = rand.Read(salt); e != nil {
 			return Key{}, "", fmt.Errorf("generate salt: %w", e)
 		}
@@ -130,6 +134,56 @@ func normalizeScopes(in []string) []string {
 	}
 	return out
 }
+
+func validateKeyName(name string) error {
+	if len(name) > 100 || !utf8.ValidString(name) {
+		return errors.New("key name must be valid UTF-8 up to 100 bytes")
+	}
+	for _, r := range name {
+		if unicode.IsControl(r) {
+			return errors.New("key name must not contain control characters")
+		}
+	}
+	return nil
+}
+
+func decodeScopes(value string) ([]string, error) {
+	parts := strings.Split(value, ",")
+	seen := make(map[string]struct{}, len(parts))
+	for _, scope := range parts {
+		if scope == "" || !validScope(scope) {
+			return nil, errors.New("invalid persisted API key scope")
+		}
+		if _, exists := seen[scope]; exists {
+			return nil, errors.New("duplicate persisted API key scope")
+		}
+		seen[scope] = struct{}{}
+	}
+	return parts, nil
+}
+
+func decodeEnabled(value int) (bool, error) {
+	switch value {
+	case 0:
+		return false, nil
+	case 1:
+		return true, nil
+	default:
+		return false, errors.New("invalid persisted API key enabled flag")
+	}
+}
+
+func validDisplayedPrefix(prefix string) bool {
+	if len(prefix) != displayedPrefixSize || !strings.HasPrefix(prefix, secretPrefix) {
+		return false
+	}
+	for i := len(secretPrefix); i < len(prefix); i++ {
+		if !strings.ContainsRune(alphabet, rune(prefix[i])) {
+			return false
+		}
+	}
+	return true
+}
 func (m *Manager) Verify(ctx context.Context, secret, need string) (*Key, error) {
 	if !validSecret(secret) {
 		return nil, ErrInvalidKey
@@ -150,17 +204,19 @@ func (m *Manager) Verify(ctx context.Context, secret, need string) (*Key, error)
 	if e != nil {
 		return nil, fmt.Errorf("lookup API key: %w", e)
 	}
-	got, e := derive(secret, salt)
+	if err := validateKeyName(k.Name); err != nil {
+		return nil, fmt.Errorf("decode API key %q name: %w", k.ID, err)
+	}
+	if !validDisplayedPrefix(k.Prefix) || len(salt) != saltSize || len(want) != hashSize {
+		return nil, fmt.Errorf("decode API key %q credential metadata: invalid persisted credential material", k.ID)
+	}
+	k.Enabled, e = decodeEnabled(enabled)
 	if e != nil {
-		return nil, e
+		return nil, fmt.Errorf("decode API key %q: %w", k.ID, e)
 	}
-	if subtle.ConstantTimeCompare(got, want) != 1 || enabled != 1 {
-		return nil, ErrInvalidKey
-	}
-	k.Enabled = true
-	k.Scopes = strings.Split(scopes, ",")
-	if need != "" && !has(k.Scopes, need) {
-		return nil, ErrInsufficientScope
+	k.Scopes, e = decodeScopes(scopes)
+	if e != nil {
+		return nil, fmt.Errorf("decode API key %q: %w", k.ID, e)
 	}
 	k.CreatedAt, e = time.Parse(time.RFC3339Nano, created)
 	if e != nil {
@@ -172,6 +228,19 @@ func (m *Manager) Verify(ctx context.Context, secret, need string) (*Key, error)
 			return nil, fmt.Errorf("parse API key %q last-used time: %w", k.ID, parseErr)
 		}
 		k.LastUsedAt = &t
+	}
+	// Decode every persisted authorization field before doing the KDF or
+	// publishing an authenticated principal. Corrupt SQLite rows must fail
+	// closed rather than partially authenticating with a valid scope fragment.
+	got, e := derive(secret, salt)
+	if e != nil {
+		return nil, e
+	}
+	if subtle.ConstantTimeCompare(got, want) != 1 || !k.Enabled {
+		return nil, ErrInvalidKey
+	}
+	if need != "" && !has(k.Scopes, need) {
+		return nil, ErrInsufficientScope
 	}
 	now := time.Now().UTC()
 	k.LastUsedAt = &now
@@ -219,8 +288,20 @@ func (m *Manager) List(ctx context.Context) ([]Key, error) {
 		if e = rows.Scan(&k.ID, &k.Name, &k.Prefix, &en, &scopes, &c, &l); e != nil {
 			return nil, e
 		}
-		k.Enabled = en == 1
-		k.Scopes = strings.Split(scopes, ",")
+		if err := validateKeyName(k.Name); err != nil {
+			return nil, fmt.Errorf("decode API key %q name: %w", k.ID, err)
+		}
+		if !validDisplayedPrefix(k.Prefix) {
+			return nil, fmt.Errorf("decode API key %q prefix: invalid persisted prefix", k.ID)
+		}
+		k.Enabled, e = decodeEnabled(en)
+		if e != nil {
+			return nil, fmt.Errorf("decode API key %q: %w", k.ID, e)
+		}
+		k.Scopes, e = decodeScopes(scopes)
+		if e != nil {
+			return nil, fmt.Errorf("decode API key %q: %w", k.ID, e)
+		}
 		k.CreatedAt, e = time.Parse(time.RFC3339Nano, c)
 		if e != nil {
 			return nil, fmt.Errorf("parse API key %q creation time: %w", k.ID, e)

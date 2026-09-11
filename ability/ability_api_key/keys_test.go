@@ -162,6 +162,73 @@ func TestVerifyDoesNotRequireSpareDatabaseConnection(t *testing.T) {
 	}
 }
 
+func TestKeyReadsRejectCorruptPersistedAuthorizationMetadata(t *testing.T) {
+	tests := []struct {
+		name       string
+		column     string
+		value      any
+		verifyOnly bool
+	}{
+		{name: "unknown scope", column: "scopes", value: "inference,root"},
+		{name: "empty scope", column: "scopes", value: "inference,"},
+		{name: "duplicate scope", column: "scopes", value: "inference,inference"},
+		{name: "invalid enabled flag", column: "enabled", value: 2},
+		{name: "invalid name", column: "name", value: "line\nbreak"},
+		{name: "invalid prefix", column: "prefix", value: "vu_bad-bad"},
+		{name: "short salt", column: "salt", value: []byte("short"), verifyOnly: true},
+		{name: "short hash", column: "hash", value: []byte("short"), verifyOnly: true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			m := New(s)
+			key, secret, err := m.Create(context.Background(), []string{"inference"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.DB.Exec(`UPDATE api_keys SET `+tc.column+`=? WHERE id=?`, tc.value, key.ID); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err = m.Verify(context.Background(), secret, "inference"); err == nil {
+				t.Fatalf("Verify accepted corrupt %s", tc.column)
+			}
+			var lastUsed any
+			if err = s.DB.QueryRow(`SELECT last_used_at FROM api_keys WHERE id=?`, key.ID).Scan(&lastUsed); err != nil {
+				t.Fatal(err)
+			}
+			if lastUsed != nil {
+				t.Fatalf("rejected key updated last_used_at to %v", lastUsed)
+			}
+			if _, err = m.List(context.Background()); err == nil && !tc.verifyOnly {
+				t.Fatalf("List accepted corrupt %s", tc.column)
+			}
+		})
+	}
+}
+
+func TestCreateRejectsUnsafeKeyNamesWithoutPersistence(t *testing.T) {
+	s, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	m := New(s)
+	for _, name := range []string{"line\nbreak", string([]byte{'b', 'a', 'd', 0xff}), strings.Repeat("n", 101)} {
+		if _, _, err = m.CreateNamed(context.Background(), name, []string{"inference"}); err == nil {
+			t.Fatalf("accepted unsafe key name %q", name)
+		}
+	}
+	var count int
+	if err = s.DB.QueryRow(`SELECT COUNT(*) FROM api_keys`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rejected names persisted keys: count=%d err=%v", count, err)
+	}
+}
+
 func TestKeyReadsRejectCorruptPersistedTimestamps(t *testing.T) {
 	tests := []struct {
 		name   string
