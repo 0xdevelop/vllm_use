@@ -2,6 +2,7 @@ package ability_download
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -747,7 +748,9 @@ func TestRetryUsesCurrentRegisteredModelAuthority(t *testing.T) {
 	runner := &fakeRunner{cmd: &fakeCmd{}}
 	d := New("hf", runner)
 	d.SetRoot(root)
-	d.SetStore(st)
+	if err = d.SetStore(st); err != nil {
+		t.Fatalf("restore historical download: %v", err)
+	}
 	job, err := d.Retry(context.Background(), "old-job", "")
 	if err != nil {
 		t.Fatal(err)
@@ -942,6 +945,65 @@ func TestSetStoreSurfacesInterruptedStatePersistenceFailure(t *testing.T) {
 	var state string
 	if queryErr := st.DB.QueryRow(`SELECT state FROM downloads WHERE id='interrupted'`).Scan(&state); queryErr != nil || state != string(Running) {
 		t.Fatalf("failed restore changed durable state=%q err=%v", state, queryErr)
+	}
+}
+
+func TestRestoreRejectsCorruptPersistedDownloadMetadata(t *testing.T) {
+	tests := []struct {
+		name   string
+		column string
+		value  any
+	}{
+		{name: "id", column: "id", value: "../job"},
+		{name: "model id", column: "model_id", value: "../model"},
+		{name: "state", column: "state", value: "unknown"},
+		{name: "negative progress", column: "progress", value: -1},
+		{name: "excess progress", column: "progress", value: 101},
+		{name: "repository", column: "repository", value: "not-a-hub-coordinate"},
+		{name: "revision", column: "revision", value: "--unsafe"},
+		{name: "destination", column: "destination", value: "relative/model"},
+		{name: "created time", column: "created_at", value: "not-a-time"},
+		{name: "updated time", column: "updated_at", value: "not-a-time"},
+		{name: "too many logs", column: "logs", value: `["one","two","three"]`},
+	}
+	oversizedLog, err := json.Marshal([]string{strings.Repeat("x", maxDownloadLogLineBytes+len(downloadLogTruncatedSuffix)+1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tests = append(tests, struct {
+		name   string
+		column string
+		value  any
+	}{name: "oversized log line", column: "logs", value: string(oversizedLog)})
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			st, openErr := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+			if openErr != nil {
+				t.Fatal(openErr)
+			}
+			defer st.Close()
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			if _, insertErr := st.DB.Exec(`INSERT INTO downloads(id,repository,revision,destination,state,progress,error,logs,created_at,updated_at) VALUES('job','org/model','main','/models/job','succeeded',100,'','[]',?,?)`, now, now); insertErr != nil {
+				t.Fatal(insertErr)
+			}
+			if test.column == "model_id" {
+				if _, modelErr := st.DB.Exec(`INSERT INTO models(id,kind,source,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('../model','huggingface','org/model',?,'model','org/model','main',0,'registered',?)`, now, now); modelErr != nil {
+					t.Fatal(modelErr)
+				}
+			}
+			if _, updateErr := st.DB.Exec(`UPDATE downloads SET `+test.column+`=? WHERE id='job'`, test.value); updateErr != nil {
+				t.Fatal(updateErr)
+			}
+
+			d := NewWithOptions("hf", &fakeRunner{cmd: &fakeCmd{}}, 1, 2)
+			if restoreErr := d.SetStore(st); restoreErr == nil || !strings.Contains(restoreErr.Error(), "persisted download") {
+				t.Fatalf("corrupt %s restore error = %v", test.name, restoreErr)
+			}
+			if len(d.List()) != 0 {
+				t.Fatal("corrupt download was published in memory")
+			}
+		})
 	}
 }
 

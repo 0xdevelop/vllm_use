@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -667,7 +668,7 @@ func (d *Downloader) restore() error {
 	if store == nil {
 		return nil
 	}
-	rows, err := store.DB.Query(`SELECT id,COALESCE(model_id,''),repository,revision,destination,state,progress,error,logs,started_at,finished_at FROM downloads ORDER BY id`)
+	rows, err := store.DB.Query(`SELECT id,COALESCE(model_id,''),repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at FROM downloads ORDER BY id`)
 	if err != nil {
 		return fmt.Errorf("read persisted downloads: %w", err)
 	}
@@ -678,17 +679,31 @@ func (d *Downloader) restore() error {
 	var restored []restoredJob
 	for rows.Next() {
 		var j Job
-		var state, logs string
+		var state, logs, created, updated string
 		var started, finished *string
-		if err = rows.Scan(&j.ID, &j.ModelID, &j.Repo, &j.Revision, &j.Destination, &state, &j.Progress, &j.Error, &logs, &started, &finished); err != nil {
+		if err = rows.Scan(&j.ID, &j.ModelID, &j.Repo, &j.Revision, &j.Destination, &state, &j.Progress, &j.Error, &logs, &started, &finished, &created, &updated); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("scan persisted download: %w", err)
 		}
 		j.State = State(state)
+		if err = d.validateRestoredJob(&j, created, updated); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("decode persisted download %q: %w", j.ID, err)
+		}
 		interrupted := j.State == Running || j.State == Pending
 		if err = json.Unmarshal([]byte(logs), &j.Logs); err != nil {
 			_ = rows.Close()
 			return fmt.Errorf("decode persisted download %q logs: %w", j.ID, err)
+		}
+		if len(j.Logs) > d.maxLogs {
+			_ = rows.Close()
+			return fmt.Errorf("decode persisted download %q: logs exceed configured retention", j.ID)
+		}
+		for _, line := range j.Logs {
+			if !utf8.ValidString(line) || len(line) > maxDownloadLogLineBytes+len(downloadLogTruncatedSuffix) {
+				_ = rows.Close()
+				return fmt.Errorf("decode persisted download %q: invalid log line", j.ID)
+			}
 		}
 		if started != nil {
 			v, parseErr := time.Parse(time.RFC3339Nano, *started)
@@ -736,6 +751,41 @@ func (d *Downloader) restore() error {
 			}
 		}
 		d.jobs[j.ID] = j
+	}
+	return nil
+}
+
+func (d *Downloader) validateRestoredJob(j *Job, created, updated string) error {
+	if j.ID == "" || len(j.ID) > 128 || strings.TrimSpace(j.ID) != j.ID || strings.ContainsAny(j.ID, "\\/\x00\n\r	") {
+		return errors.New("invalid id")
+	}
+	if j.ModelID != "" && (len(j.ModelID) > 128 || strings.TrimSpace(j.ModelID) != j.ModelID || strings.ContainsAny(j.ModelID, "\\/\x00\n\r	")) {
+		return errors.New("invalid model id")
+	}
+	normalizedRepo, err := huggingface.NormalizeRepository(j.Repo)
+	if err != nil || normalizedRepo != j.Repo {
+		return errors.New("invalid repository")
+	}
+	normalizedRevision, err := huggingface.NormalizeRevision(j.Revision)
+	if err != nil || normalizedRevision != j.Revision {
+		return errors.New("invalid revision")
+	}
+	switch j.State {
+	case Pending, Running, Succeeded, Failed, Canceled:
+	default:
+		return errors.New("invalid state")
+	}
+	if math.IsNaN(j.Progress) || math.IsInf(j.Progress, 0) || j.Progress < 0 || j.Progress > 100 {
+		return errors.New("invalid progress")
+	}
+	if _, err = time.Parse(time.RFC3339Nano, created); err != nil {
+		return fmt.Errorf("parse creation time: %w", err)
+	}
+	if _, err = time.Parse(time.RFC3339Nano, updated); err != nil {
+		return fmt.Errorf("parse update time: %w", err)
+	}
+	if !filepath.IsAbs(j.Destination) {
+		return errors.New("destination must be absolute")
 	}
 	return nil
 }
