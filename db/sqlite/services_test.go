@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,6 +98,32 @@ func TestRecordRequestWithLimitBoundsAuditHistory(t *testing.T) {
 	}
 }
 
+func TestRecordRequestRejectsInvalidMetadataWithoutPersistence(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	invalid := []APIRequest{
+		{RequestID: "contains space", Method: "POST", Path: "/v1/responses", StatusCode: 200},
+		{RequestID: "req", Method: strings.Repeat("M", 33), Path: "/v1/responses", StatusCode: 200},
+		{RequestID: "req", Method: "POST", Path: strings.Repeat("p", 2049), StatusCode: 200},
+		{RequestID: "req", Method: "POST", Path: "/v1/responses", Model: string([]byte{0xff}), StatusCode: 200},
+		{RequestID: "req", Method: "POST", Path: "/v1/responses", StatusCode: 99},
+		{RequestID: "req", Method: "POST", Path: "/v1/responses", StatusCode: 200, DurationMS: -1},
+	}
+	for i, request := range invalid {
+		if err = s.RecordRequest(context.Background(), request); err == nil {
+			t.Fatalf("invalid request %d was accepted", i)
+		}
+	}
+	var count int
+	if err = s.DB.QueryRow(`SELECT COUNT(*) FROM api_requests`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("invalid audit writes persisted count=%d err=%v", count, err)
+	}
+}
+
 func TestSettingsAndAuditReadsRejectCorruptPersistedTimestamps(t *testing.T) {
 	t.Run("setting", func(t *testing.T) {
 		s, err := Open(filepath.Join(t.TempDir(), "db"))
@@ -131,4 +158,86 @@ func TestSettingsAndAuditReadsRejectCorruptPersistedTimestamps(t *testing.T) {
 			t.Fatal("corrupt audit timestamp was silently accepted")
 		}
 	})
+}
+
+func TestSettingsRejectCorruptPersistedMetadata(t *testing.T) {
+	tests := []struct {
+		name   string
+		column string
+		value  any
+	}{
+		{name: "surrounding whitespace", column: "key", value: " theme"},
+		{name: "oversized key", column: "key", value: strings.Repeat("k", 129)},
+		{name: "invalid UTF-8 key", column: "key", value: string([]byte{0xff})},
+		{name: "control in key", column: "key", value: "theme\nname"},
+		{name: "sensitive key", column: "key", value: "api-key"},
+		{name: "oversized value", column: "value", value: strings.Repeat("v", 64*1024+1)},
+		{name: "invalid UTF-8 value", column: "value", value: string([]byte{0xff})},
+		{name: "secret marker", column: "secret", value: 1},
+		{name: "invalid secret marker", column: "secret", value: 2},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s, err := Open(filepath.Join(t.TempDir(), "db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if err = s.PutSettings(context.Background(), []Setting{{Key: "theme", Value: "dark"}}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.DB.Exec(`UPDATE settings SET `+test.column+`=?`, test.value); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.Settings(context.Background()); err == nil {
+				t.Fatalf("Settings accepted corrupt %s", test.column)
+			}
+		})
+	}
+}
+
+func TestRecentRequestsRejectCorruptPersistedMetadata(t *testing.T) {
+	tests := []struct {
+		name   string
+		column string
+		value  any
+	}{
+		{name: "audit id", column: "id", value: "not-an-audit-id"},
+		{name: "empty request id", column: "request_id", value: ""},
+		{name: "oversized request id", column: "request_id", value: strings.Repeat("r", 129)},
+		{name: "non-visible request id", column: "request_id", value: "request id"},
+		{name: "empty method", column: "method", value: ""},
+		{name: "oversized method", column: "method", value: strings.Repeat("M", 33)},
+		{name: "empty path", column: "path", value: ""},
+		{name: "oversized path", column: "path", value: "/" + strings.Repeat("p", 2048)},
+		{name: "oversized model", column: "model", value: strings.Repeat("m", 513)},
+		{name: "invalid UTF-8 model", column: "model", value: string([]byte{0xff})},
+		{name: "invalid status", column: "status_code", value: 700},
+		{name: "negative duration", column: "duration_ms", value: -1},
+		{name: "oversized key id", column: "key_id", value: strings.Repeat("k", 129)},
+		{name: "oversized remote address", column: "remote_addr", value: strings.Repeat("a", 257)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			s, err := Open(filepath.Join(t.TempDir(), "db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			if err = s.RecordRequest(context.Background(), APIRequest{RequestID: "req", Method: "POST", Path: "/v1/responses", StatusCode: 200}); err != nil {
+				t.Fatal(err)
+			}
+			if test.column == "key_id" {
+				if _, err = s.DB.Exec(`PRAGMA foreign_keys=OFF`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err = s.DB.Exec(`UPDATE api_requests SET `+test.column+`=?`, test.value); err != nil {
+				t.Fatal(err)
+			}
+			if _, err = s.RecentRequests(context.Background(), 10); err == nil {
+				t.Fatalf("RecentRequests accepted corrupt %s", test.column)
+			}
+		})
+	}
 }

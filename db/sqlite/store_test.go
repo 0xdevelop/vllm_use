@@ -3,6 +3,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -201,6 +202,14 @@ func TestOpenUpgradesExistingSchema(t *testing.T) {
 	var requests int
 	if err = s.DB.QueryRow(`SELECT COUNT(*) FROM api_requests WHERE request_id='same-client-id'`).Scan(&requests); err != nil || requests != 2 {
 		t.Fatalf("preserved duplicate request audits=%d err=%v", requests, err)
+	}
+	var legacyAuditID string
+	if err = s.DB.QueryRow(`SELECT id FROM api_requests WHERE request_id='same-client-id' ORDER BY created_at LIMIT 1`).Scan(&legacyAuditID); err != nil {
+		t.Fatal(err)
+	}
+	decodedID, decodeErr := hex.DecodeString(legacyAuditID)
+	if decodeErr != nil || len(decodedID) != 16 || hex.EncodeToString(decodedID) != legacyAuditID {
+		t.Fatalf("legacy audit ID was not normalized: %q err=%v", legacyAuditID, decodeErr)
 	}
 }
 

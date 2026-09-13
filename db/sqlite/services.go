@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 )
 
 type Setting struct {
@@ -50,11 +51,16 @@ func validateSetting(v *Setting) error {
 	if v.Key == "" {
 		return errors.New("setting key required")
 	}
-	if len(v.Key) > 128 {
-		return errors.New("setting key exceeds 128 bytes")
+	if len(v.Key) > 128 || !utf8.ValidString(v.Key) {
+		return errors.New("setting key must be valid UTF-8 up to 128 bytes")
 	}
-	if len(v.Value) > 64*1024 {
-		return errors.New("setting value exceeds 64 KiB")
+	for _, r := range v.Key {
+		if unicode.IsControl(r) {
+			return errors.New("setting key must not contain control characters")
+		}
+	}
+	if len(v.Value) > 64*1024 || !utf8.ValidString(v.Value) {
+		return errors.New("setting value must be valid UTF-8 up to 64 KiB")
 	}
 	// Compare a separator-free form so cosmetic spelling cannot turn an
 	// API-key/credential field into a persistable non-sensitive setting.
@@ -65,7 +71,7 @@ func validateSetting(v *Setting) error {
 }
 
 func (s *Store) Settings(ctx context.Context) ([]Setting, error) {
-	rows, e := s.DB.QueryContext(ctx, `SELECT key,value,updated_at FROM settings ORDER BY key`)
+	rows, e := s.DB.QueryContext(ctx, `SELECT key,value,secret,updated_at FROM settings ORDER BY key`)
 	if e != nil {
 		return nil, fmt.Errorf("list settings: %w", e)
 	}
@@ -73,9 +79,20 @@ func (s *Store) Settings(ctx context.Context) ([]Setting, error) {
 	out := []Setting{}
 	for rows.Next() {
 		var v Setting
+		var secret int
 		var ts string
-		if e = rows.Scan(&v.Key, &v.Value, &ts); e != nil {
+		if e = rows.Scan(&v.Key, &v.Value, &secret, &ts); e != nil {
 			return nil, e
+		}
+		if secret != 0 {
+			return nil, fmt.Errorf("validate setting %q: persisted secret marker is not allowed", v.Key)
+		}
+		persistedKey := v.Key
+		if e = validateSetting(&v); e != nil {
+			return nil, fmt.Errorf("validate setting %q: %w", persistedKey, e)
+		}
+		if v.Key != persistedKey {
+			return nil, fmt.Errorf("validate setting %q: key is not in canonical form", persistedKey)
 		}
 		v.UpdatedAt, e = time.Parse(time.RFC3339Nano, ts)
 		if e != nil {
@@ -180,6 +197,15 @@ type APIRequest struct {
 
 const DefaultMaxAuditRecords = 10_000
 
+const (
+	maxAuditRequestIDBytes  = 128
+	maxAuditMethodBytes     = 32
+	maxAuditPathBytes       = 2048
+	maxAuditModelBytes      = 512
+	maxAuditKeyIDBytes      = 128
+	maxAuditRemoteAddrBytes = 256
+)
+
 func (s *Store) RecordRequest(ctx context.Context, v APIRequest) error {
 	return s.RecordRequestWithLimit(ctx, v, DefaultMaxAuditRecords)
 }
@@ -194,11 +220,15 @@ func (s *Store) RecordRequestWithLimit(ctx context.Context, v APIRequest, maxRec
 	if maxRecords == 0 {
 		return nil
 	}
+	if err := validateAuditRequest(v, false); err != nil {
+		return fmt.Errorf("validate request audit: %w", err)
+	}
 	idBytes := make([]byte, 16)
 	if _, e := rand.Read(idBytes); e != nil {
 		return fmt.Errorf("generate request audit id: %w", e)
 	}
 	id := hex.EncodeToString(idBytes)
+	v.AuditID = id
 	tx, err := s.DB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin request audit: %w", err)
@@ -235,10 +265,70 @@ func (s *Store) RecentRequests(ctx context.Context, limit int) ([]APIRequest, er
 		if e != nil {
 			return nil, fmt.Errorf("parse request audit %q creation time: %w", v.AuditID, e)
 		}
+		if e = validateAuditRequest(v, true); e != nil {
+			return nil, fmt.Errorf("validate request audit %q: %w", v.AuditID, e)
+		}
 		out = append(out, v)
 	}
 	return out, rows.Err()
 }
+
+func validateAuditRequest(v APIRequest, persisted bool) error {
+	if persisted {
+		decoded, err := hex.DecodeString(v.AuditID)
+		if err != nil || len(decoded) != 16 || hex.EncodeToString(decoded) != v.AuditID {
+			return errors.New("invalid audit ID")
+		}
+	}
+	if !visibleASCII(v.RequestID, maxAuditRequestIDBytes) {
+		return errors.New("request ID must be visible ASCII between 1 and 128 bytes")
+	}
+	if err := validateAuditText("method", v.Method, maxAuditMethodBytes, true); err != nil {
+		return err
+	}
+	if err := validateAuditText("path", v.Path, maxAuditPathBytes, true); err != nil {
+		return err
+	}
+	if err := validateAuditText("model", v.Model, maxAuditModelBytes, false); err != nil {
+		return err
+	}
+	if v.StatusCode < 100 || v.StatusCode > 599 {
+		return errors.New("status code must be between 100 and 599")
+	}
+	if v.DurationMS < 0 {
+		return errors.New("duration must not be negative")
+	}
+	if err := validateAuditText("key ID", v.KeyID, maxAuditKeyIDBytes, false); err != nil {
+		return err
+	}
+	if err := validateAuditText("remote address", v.RemoteAddr, maxAuditRemoteAddrBytes, false); err != nil {
+		return err
+	}
+	return nil
+}
+
+func visibleASCII(value string, maxBytes int) bool {
+	if value == "" || len(value) > maxBytes {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < 0x21 || value[i] > 0x7e {
+			return false
+		}
+	}
+	return true
+}
+
+func validateAuditText(field, value string, maxBytes int, required bool) error {
+	if required && value == "" {
+		return fmt.Errorf("%s is required", field)
+	}
+	if len(value) > maxBytes || !utf8.ValidString(value) {
+		return fmt.Errorf("%s must be valid UTF-8 up to %d bytes", field, maxBytes)
+	}
+	return nil
+}
+
 func boolInt(v bool) int {
 	if v {
 		return 1
