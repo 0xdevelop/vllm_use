@@ -242,6 +242,15 @@ func TestMajorAdminRoutesAndJSONContract(t *testing.T) {
 	if w.Code != http.StatusBadRequest || decodeObject(t, w)["error"] != "invalid JSON" {
 		t.Fatalf("caller-controlled health URL accepted: %d %s", w.Code, w.Body.String())
 	}
+	oversizedDType := strings.Repeat("d", 257)
+	w = request(t, h, http.MethodPost, "/api/runtime/start", "admin", `{"options":{"model":"m","port":8000,"dtype":`+jsonString(oversizedDType)+`}}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid dtype") {
+		t.Fatalf("oversized runtime option accepted: %d %s", w.Code, w.Body.String())
+	}
+	w = request(t, h, http.MethodGet, "/api/runtime", "admin", "")
+	if w.Code != http.StatusOK || decodeObject(t, w)["status"] != "stopped" {
+		t.Fatalf("rejected runtime option launched process: %d %s", w.Code, w.Body.String())
+	}
 	w = request(t, h, http.MethodDelete, "/api/keys/"+keyID, "admin", "")
 	if w.Code != http.StatusOK {
 		t.Fatalf("key delete: %d %s", w.Code, w.Body.String())

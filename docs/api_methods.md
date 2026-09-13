@@ -432,7 +432,10 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 
 ```json
 {
-  "options": "<options>"
+  "options": {
+    "model": "<model>",
+    "port": 1
+  }
 }
 ```
 
@@ -443,6 +446,110 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
   "additionalProperties": false,
   "properties": {
     "options": {
+      "additionalProperties": false,
+      "properties": {
+        "dtype": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "enable_auto_tool_choice": {
+          "type": "boolean"
+        },
+        "extra_args": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "values": {
+                "items": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "gpu_devices": {
+          "items": {
+            "maximum": 1023,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "gpu_memory_utilization": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "host": {
+          "maxLength": 45,
+          "type": "string"
+        },
+        "max_model_len": {
+          "maximum": 2147483647,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "pipeline_parallel_size": {
+          "maximum": 1024,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "port": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "quantization": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "reasoning_parser": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "served_model_name": {
+          "maxLength": 512,
+          "type": "string"
+        },
+        "tensor_parallel": {
+          "maximum": 1024,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_call_parser": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "trust_remote_code": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "model",
+        "port"
+      ],
       "type": "object"
     }
   },
@@ -461,7 +568,10 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 
 ```json
 {
-  "options": "<options>"
+  "options": {
+    "model": "<model>",
+    "port": 1
+  }
 }
 ```
 
@@ -472,6 +582,110 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
   "additionalProperties": false,
   "properties": {
     "options": {
+      "additionalProperties": false,
+      "properties": {
+        "dtype": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "enable_auto_tool_choice": {
+          "type": "boolean"
+        },
+        "extra_args": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "values": {
+                "items": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "gpu_devices": {
+          "items": {
+            "maximum": 1023,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "gpu_memory_utilization": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "host": {
+          "maxLength": 45,
+          "type": "string"
+        },
+        "max_model_len": {
+          "maximum": 2147483647,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "pipeline_parallel_size": {
+          "maximum": 1024,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "port": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "quantization": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "reasoning_parser": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "served_model_name": {
+          "maxLength": 512,
+          "type": "string"
+        },
+        "tensor_parallel": {
+          "maximum": 1024,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_call_parser": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "trust_remote_code": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "model",
+        "port"
+      ],
       "type": "object"
     }
   },
@@ -491,7 +705,9 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 ```json
 {
   "model_id": "<model_id>",
-  "options": "<options>"
+  "options": {
+    "port": 1
+  }
 }
 ```
 
@@ -505,6 +721,109 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
       "type": "string"
     },
     "options": {
+      "additionalProperties": false,
+      "properties": {
+        "dtype": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "enable_auto_tool_choice": {
+          "type": "boolean"
+        },
+        "extra_args": {
+          "items": {
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "maxLength": 128,
+                "minLength": 1,
+                "type": "string"
+              },
+              "values": {
+                "items": {
+                  "maxLength": 4096,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                "maxItems": 64,
+                "type": "array"
+              }
+            },
+            "required": [
+              "name"
+            ],
+            "type": "object"
+          },
+          "maxItems": 64,
+          "type": "array"
+        },
+        "gpu_devices": {
+          "items": {
+            "maximum": 1023,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "maxItems": 64,
+          "type": "array",
+          "uniqueItems": true
+        },
+        "gpu_memory_utilization": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "host": {
+          "maxLength": 45,
+          "type": "string"
+        },
+        "max_model_len": {
+          "maximum": 2147483647,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "model": {
+          "maxLength": 4096,
+          "minLength": 1,
+          "type": "string"
+        },
+        "pipeline_parallel_size": {
+          "maximum": 1024,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "port": {
+          "maximum": 65535,
+          "minimum": 1,
+          "type": "integer"
+        },
+        "quantization": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "reasoning_parser": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "served_model_name": {
+          "maxLength": 512,
+          "type": "string"
+        },
+        "tensor_parallel": {
+          "maximum": 1024,
+          "minimum": 0,
+          "type": "integer"
+        },
+        "tool_call_parser": {
+          "maxLength": 256,
+          "type": "string"
+        },
+        "trust_remote_code": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "port"
+      ],
       "type": "object"
     }
   },
@@ -540,7 +859,7 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 
 ```json
 {
-  "scopes": "<scopes>"
+  "scopes": []
 }
 ```
 
@@ -694,7 +1013,7 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
 
 ```json
 {
-  "settings": "<settings>"
+  "settings": []
 }
 ```
 

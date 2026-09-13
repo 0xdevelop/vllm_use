@@ -172,7 +172,8 @@ func renderArgumentsExample(doc *strings.Builder, method *api_supported_methods.
 	return nil
 }
 
-// examplePlaceholder 按字段 schema 造举例值：enum 取首值、date-time 给固定样例、其余 <字段名> 占位。
+// examplePlaceholder 按字段 schema 生成类型正确的最小举例：对象递归展开必填字段，
+// enum 取首值，date-time 给固定样例，其余标量按 JSON 类型生成占位值。
 func examplePlaceholder(name string, rawPropertySchema interface{}) interface{} {
 	propertySchema, ok := rawPropertySchema.(map[string]interface{})
 	if !ok {
@@ -187,7 +188,27 @@ func examplePlaceholder(name string, rawPropertySchema interface{}) interface{} 
 	if format, exists := propertySchema["format"].(string); exists && format == "date-time" {
 		return "2026-01-02T15:04:05Z"
 	}
-	return "<" + name + ">"
+	switch propertySchema["type"] {
+	case "object":
+		properties, _ := propertySchema["properties"].(map[string]interface{})
+		required, _ := propertySchema["required"].([]string)
+		object := make(map[string]interface{}, len(required))
+		for _, childName := range required {
+			object[childName] = examplePlaceholder(childName, properties[childName])
+		}
+		return object
+	case "array":
+		return []interface{}{}
+	case "integer", "number":
+		if minimum, exists := propertySchema["minimum"]; exists {
+			return minimum
+		}
+		return 0
+	case "boolean":
+		return false
+	default:
+		return "<" + name + ">"
+	}
 }
 
 func renderErrorCodeTable() (string, error) {

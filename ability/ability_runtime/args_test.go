@@ -2,7 +2,9 @@ package ability_runtime
 
 import (
 	"encoding/json"
+	"math"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -37,17 +39,33 @@ func TestOptionsJSONContract(t *testing.T) {
 
 func TestBuildArgsValidationAndReservedFlags(t *testing.T) {
 	invalid := []Options{
+		{Model: strings.Repeat("m", maxRuntimeModelBytes+1), Port: 1},
+		{Model: string([]byte{0xff}), Port: 1},
+		{Model: "model	name", Port: 1},
 		{Model: "m", Port: 1, PipelineParallelSize: -1},
+		{Model: "m", Port: 1, TensorParallel: maxParallelSize + 1},
+		{Model: "m", Port: 1, PipelineParallelSize: maxParallelSize + 1},
 		{Model: "m", Port: 1, GPUDevices: []int{0, 0}},
+		{Model: "m", Port: 1, GPUDevices: []int{maxGPUDeviceIndex + 1}},
+		{Model: "m", Port: 1, GPUDevices: make([]int, maxGPUDevices+1)},
 		{Model: "m", Port: 1, GPUMemoryUtilization: 1.01},
+		{Model: "m", Port: 1, GPUMemoryUtilization: math.NaN()},
+		{Model: "m", Port: 1, GPUMemoryUtilization: math.Inf(1)},
 		{Model: "m", Port: 1, MaxModelLen: -1},
+		{Model: "m", Port: 1, MaxModelLen: maxModelLength + 1},
 		{Model: "m", Port: 1, DType: "--bad"},
+		{Model: "m", Port: 1, DType: strings.Repeat("d", maxRuntimeScalarBytes+1)},
 		{Model: "m", Port: 1, ServedModelName: "--port"},
 		{Model: "m", Port: 1, ServedModelName: "bad\nname"},
+		{Model: "m", Port: 1, ServedModelName: strings.Repeat("s", maxServedModelNameBytes+1)},
 		{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: "---port", Values: []string{"2"}}}},
 		{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: "max.num.seqs", Values: []string{"2"}}}},
 		{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: "max-num-seqs", Values: []string{"--port", "2"}}}},
 		{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: "chat-template", Values: []string{"bad\x00value"}}}},
+		{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: strings.Repeat("a", maxExtraArgNameBytes+1)}}},
+		{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: "chat-template", Values: []string{strings.Repeat("v", maxExtraArgValueBytes+1)}}}},
+		{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: "one"}, {Name: "one"}}},
+		{Model: "m", Port: 1, ExtraArgs: make([]ExtraArg, maxExtraArgs+1)},
 	}
 	for _, options := range invalid {
 		if _, err := BuildArgs(options); err == nil {
@@ -58,5 +76,15 @@ func TestBuildArgsValidationAndReservedFlags(t *testing.T) {
 		if _, err := BuildArgs(Options{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: name}}}); err == nil {
 			t.Fatalf("reserved flag %q accepted", name)
 		}
+	}
+}
+
+func TestBuildArgsBoundsAggregateExtraArgumentBytes(t *testing.T) {
+	values := make([]string, 17)
+	for i := range values {
+		values[i] = strings.Repeat("v", maxExtraArgValueBytes)
+	}
+	if _, err := BuildArgs(Options{Model: "m", Port: 1, ExtraArgs: []ExtraArg{{Name: "chat-template", Values: values}}}); err == nil || !strings.Contains(err.Error(), "64 KiB") {
+		t.Fatalf("aggregate extra argument limit not enforced: %v", err)
 	}
 }

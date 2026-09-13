@@ -2,9 +2,27 @@ package ability_runtime
 
 import (
 	"errors"
+	"math"
 	"net"
 	"strconv"
 	"strings"
+	"unicode"
+	"unicode/utf8"
+)
+
+const (
+	maxRuntimeModelBytes    = 4096
+	maxRuntimeScalarBytes   = 256
+	maxServedModelNameBytes = 512
+	maxParallelSize         = 1024
+	maxGPUDevices           = 64
+	maxGPUDeviceIndex       = 1023
+	maxModelLength          = 2_147_483_647
+	maxExtraArgs            = 64
+	maxExtraArgNameBytes    = 128
+	maxExtraArgValues       = 64
+	maxExtraArgValueBytes   = 4096
+	maxExtraArgumentsBytes  = 64 << 10
 )
 
 type ExtraArg struct {
@@ -31,8 +49,8 @@ type Options struct {
 }
 
 func BuildArgs(o Options) ([]string, error) {
-	if o.Model == "" || strings.HasPrefix(o.Model, "-") || strings.ContainsAny(o.Model, "\x00\n\r") {
-		return nil, errors.New("model is required")
+	if err := validateBoundedArgument("model", o.Model, maxRuntimeModelBytes, false); err != nil {
+		return nil, err
 	}
 	if o.Port < 1 || o.Port > 65535 {
 		return nil, errors.New("invalid port")
@@ -44,33 +62,36 @@ func BuildArgs(o Options) ([]string, error) {
 	if o.Host != "localhost" && (ip == nil || !ip.IsLoopback()) {
 		return nil, errors.New("runtime host must be a loopback address")
 	}
+	if o.TensorParallel < 0 || o.TensorParallel > maxParallelSize || o.PipelineParallelSize < 0 || o.PipelineParallelSize > maxParallelSize {
+		return nil, errors.New("parallel sizes must be between 0 and 1024")
+	}
 	a := []string{"serve", o.Model, "--host", o.Host, "--port", strconv.Itoa(o.Port)}
 	if o.TensorParallel > 0 {
 		a = append(a, "--tensor-parallel-size", strconv.Itoa(o.TensorParallel))
 	}
-	if o.TensorParallel < 0 || o.PipelineParallelSize < 0 {
-		return nil, errors.New("parallel sizes must not be negative")
-	}
 	if o.PipelineParallelSize > 0 {
 		a = append(a, "--pipeline-parallel-size", strconv.Itoa(o.PipelineParallelSize))
+	}
+	if len(o.GPUDevices) > maxGPUDevices {
+		return nil, errors.New("gpu devices exceed 64 entries")
 	}
 	if len(o.GPUDevices) > 0 {
 		seen := make(map[int]bool, len(o.GPUDevices))
 		for _, device := range o.GPUDevices {
-			if device < 0 || seen[device] {
-				return nil, errors.New("gpu devices must be unique non-negative indexes")
+			if device < 0 || device > maxGPUDeviceIndex || seen[device] {
+				return nil, errors.New("gpu devices must be unique indexes between 0 and 1023")
 			}
 			seen[device] = true
 		}
 	}
-	if o.GPUMemoryUtilization < 0 || o.GPUMemoryUtilization > 1 {
+	if math.IsNaN(o.GPUMemoryUtilization) || math.IsInf(o.GPUMemoryUtilization, 0) || o.GPUMemoryUtilization < 0 || o.GPUMemoryUtilization > 1 {
 		return nil, errors.New("gpu memory utilization must be between 0 and 1")
 	}
 	if o.GPUMemoryUtilization > 0 {
 		a = append(a, "--gpu-memory-utilization", strconv.FormatFloat(o.GPUMemoryUtilization, 'g', -1, 64))
 	}
-	if o.MaxModelLen < 0 {
-		return nil, errors.New("max model length must not be negative")
+	if o.MaxModelLen < 0 || o.MaxModelLen > maxModelLength {
+		return nil, errors.New("max model length must be between 0 and 2147483647")
 	}
 	if o.MaxModelLen > 0 {
 		a = append(a, "--max-model-len", strconv.Itoa(o.MaxModelLen))
@@ -79,8 +100,8 @@ func BuildArgs(o Options) ([]string, error) {
 		if value.value == "" {
 			continue
 		}
-		if strings.HasPrefix(value.value, "-") || strings.ContainsAny(value.value, "\x00\n\r\t ") {
-			return nil, errors.New("invalid " + value.flag)
+		if err := validateBoundedArgument(value.flag, value.value, maxRuntimeScalarBytes, true); err != nil {
+			return nil, err
 		}
 		a = append(a, "--"+value.flag, value.value)
 	}
@@ -91,20 +112,34 @@ func BuildArgs(o Options) ([]string, error) {
 		a = append(a, "--enable-auto-tool-choice")
 	}
 	if o.ServedModelName != "" {
-		if err := validateArgumentValue("served model name", o.ServedModelName); err != nil {
+		if err := validateBoundedArgument("served model name", o.ServedModelName, maxServedModelNameBytes, false); err != nil {
 			return nil, err
 		}
 		a = append(a, "--served-model-name", o.ServedModelName)
 	}
 	reserved := map[string]bool{"model": true, "host": true, "port": true, "tensor-parallel-size": true, "pipeline-parallel-size": true, "gpu-memory-utilization": true, "max-model-len": true, "dtype": true, "quantization": true, "trust-remote-code": true, "tool-call-parser": true, "reasoning-parser": true, "enable-auto-tool-choice": true, "served-model-name": true}
+	if len(o.ExtraArgs) > maxExtraArgs {
+		return nil, errors.New("extra arguments exceed 64 entries")
+	}
+	seenExtra := make(map[string]bool, len(o.ExtraArgs))
+	extraBytes := 0
 	for _, x := range o.ExtraArgs {
 		n := strings.TrimPrefix(x.Name, "--")
-		if !validExtraArgumentName(n) || reserved[n] {
+		if len(n) > maxExtraArgNameBytes || !validExtraArgumentName(n) || reserved[n] || seenExtra[n] {
 			return nil, errors.New("invalid or reserved extra argument: " + x.Name)
 		}
+		seenExtra[n] = true
+		if len(x.Values) > maxExtraArgValues {
+			return nil, errors.New("extra argument values exceed 64 entries")
+		}
+		extraBytes += len(n) + 2
 		for _, value := range x.Values {
-			if err := validateArgumentValue("extra argument value", value); err != nil {
+			if err := validateBoundedArgument("extra argument value", value, maxExtraArgValueBytes, false); err != nil {
 				return nil, err
+			}
+			extraBytes += len(value)
+			if extraBytes > maxExtraArgumentsBytes {
+				return nil, errors.New("extra arguments exceed 64 KiB")
 			}
 		}
 		a = append(a, "--"+n)
@@ -126,9 +161,14 @@ func validExtraArgumentName(name string) bool {
 	return true
 }
 
-func validateArgumentValue(name, value string) error {
-	if strings.HasPrefix(value, "--") || strings.ContainsAny(value, "\x00\n\r") {
+func validateBoundedArgument(name, value string, maxBytes int, rejectWhitespace bool) error {
+	if value == "" || len(value) > maxBytes || !utf8.ValidString(value) || strings.HasPrefix(value, "-") {
 		return errors.New("invalid " + name)
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) || (rejectWhitespace && unicode.IsSpace(r)) {
+			return errors.New("invalid " + name)
+		}
 	}
 	return nil
 }
