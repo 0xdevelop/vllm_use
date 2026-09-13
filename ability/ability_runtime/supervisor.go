@@ -107,7 +107,7 @@ func (s *Supervisor) start(ctx context.Context, o Options) error {
 		return errors.New("runtime already active")
 	}
 	runctx, cancel := context.WithCancel(context.Background())
-	cmd := exec.CommandContext(runctx, s.binary, args...)
+	cmd := runtimeCommand(runctx, s.binary, args...)
 	cmd.Env = processenv.WithoutManagerCredentials(os.Environ())
 	if len(o.GPUDevices) > 0 {
 		devices := make([]string, len(o.GPUDevices))
@@ -116,7 +116,6 @@ func (s *Supervisor) start(ctx context.Context, o Options) error {
 		}
 		cmd.Env = setEnv(cmd.Env, "CUDA_VISIBLE_DEVICES", strings.Join(devices, ","))
 	}
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	out, e := cmd.StdoutPipe()
 	if e != nil {
 		s.mu.Unlock()
@@ -169,6 +168,16 @@ func (s *Supervisor) start(ctx context.Context, o Options) error {
 	}
 	return nil
 }
+
+func runtimeCommand(ctx context.Context, binary string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid:   true,
+		Pdeathsig: syscall.SIGKILL,
+	}
+	return cmd
+}
+
 func (s *Supervisor) poll(ctx context.Context, cmd *exec.Cmd, url string) error {
 	ctx, cancel := context.WithTimeout(ctx, s.readyTimeout)
 	defer cancel()

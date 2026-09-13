@@ -60,6 +60,16 @@ func TestNewSupervisorReadinessClientDoesNotUseProxyOrFollowRedirects(t *testing
 	}
 }
 
+func TestRuntimeCommandKillsLeaderWhenManagerDies(t *testing.T) {
+	cmd := runtimeCommand(context.Background(), "true")
+	if cmd.SysProcAttr == nil || !cmd.SysProcAttr.Setpgid {
+		t.Fatal("runtime command must run in its own process group")
+	}
+	if cmd.SysProcAttr.Pdeathsig != syscall.SIGKILL {
+		t.Fatalf("runtime parent-death signal = %v, want SIGKILL", cmd.SysProcAttr.Pdeathsig)
+	}
+}
+
 func eventually(t *testing.T, f func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
