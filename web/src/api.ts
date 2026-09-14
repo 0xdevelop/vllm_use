@@ -16,11 +16,13 @@ export type SystemStatus={go_version:string;goos:string;goarch:string;cpus:numbe
 export type Dashboard={models:number;runtime:Runtime;downloads:DownloadTask[];recent_requests:RequestMetadata[]}
 export class APIError extends Error{constructor(readonly status:number,message:string){super(message)}}
 export const tokenStore={get:()=>sessionStorage.getItem('vllm-use-admin-token')??'',set:(v:string)=>v?sessionStorage.setItem('vllm-use-admin-token',v):sessionStorage.removeItem('vllm-use-admin-token')}
-export async function api<T>(path:string,init?:RequestInit):Promise<T>{
- const headers=new Headers(init?.headers); headers.set('Accept','application/json'); const token=tokenStore.get(); if(token)headers.set('Authorization',`Bearer ${token}`); if(init?.body)headers.set('Content-Type','application/json')
+async function request<T>(path:string,init:RequestInit|undefined,token:string):Promise<T>{
+ const headers=new Headers(init?.headers); headers.set('Accept','application/json'); if(token)headers.set('Authorization',`Bearer ${token}`); if(init?.body)headers.set('Content-Type','application/json')
  const response=await fetch(path,{...init,headers}); const body:unknown=await response.json().catch(()=>null)
  if(!response.ok){const message=typeof body==='object'&&body!==null&&'error' in body&&typeof body.error==='string'?body.error:`请求失败 (${response.status})`;throw new APIError(response.status,message)}
  return body as T
 }
+export function api<T>(path:string,init?:RequestInit):Promise<T>{return request<T>(path,init,tokenStore.get())}
+export async function validateManagementToken(token:string):Promise<void>{await request<unknown>('/api/models',undefined,token)}
 export const json=(value:unknown)=>JSON.stringify(value)
 export function linkedDownload(model:Model,id:string,token:string):DownloadRequest{return{id,model_id:model.id,...(token?{token}:{})}}
