@@ -921,6 +921,9 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
   "additionalProperties": false,
   "properties": {
     "id": {
+      "maxLength": 24,
+      "minLength": 24,
+      "pattern": "^[A-Za-z0-9]+$",
       "type": "string"
     }
   },
@@ -950,6 +953,9 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
   "additionalProperties": false,
   "properties": {
     "id": {
+      "maxLength": 24,
+      "minLength": 24,
+      "pattern": "^[A-Za-z0-9]+$",
       "type": "string"
     }
   },
@@ -979,6 +985,9 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
   "additionalProperties": false,
   "properties": {
     "id": {
+      "maxLength": 24,
+      "minLength": 24,
+      "pattern": "^[A-Za-z0-9]+$",
       "type": "string"
     }
   },

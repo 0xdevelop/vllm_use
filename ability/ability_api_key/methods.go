@@ -44,9 +44,9 @@ func LoadAPIMethods() {
 			return map[string]bool{map[bool]string{true: "enabled", false: "disabled"}[enabled]: err == nil}, err
 		}
 	}
-	add(MethodEnable, "启用 API Key", map[string]interface{}{"id": str()}, []string{"id"}, setEnabled(true))
-	add(MethodDisable, "禁用 API Key", map[string]interface{}{"id": str()}, []string{"id"}, setEnabled(false))
-	add(MethodDelete, "删除 API Key", map[string]interface{}{"id": str()}, []string{"id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+	add(MethodEnable, "启用 API Key", map[string]interface{}{"id": idSchema()}, []string{"id"}, setEnabled(true))
+	add(MethodDisable, "禁用 API Key", map[string]interface{}{"id": idSchema()}, []string{"id"}, setEnabled(false))
+	add(MethodDelete, "删除 API Key", map[string]interface{}{"id": idSchema()}, []string{"id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
 		var in struct {
 			ID string `json:"id"`
 		}
@@ -68,3 +68,6 @@ func add(name, description string, properties map[string]interface{}, required [
 	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{Name: name, Description: description, Scope: "mcp.admin", InputSchema: api_supported_methods.ObjectSchema(properties, required), Execute: execute})
 }
 func str() map[string]interface{} { return map[string]interface{}{"type": "string"} }
+func idSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "string", "minLength": keyIDLength, "maxLength": keyIDLength, "pattern": "^[A-Za-z0-9]+$"}
+}

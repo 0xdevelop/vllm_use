@@ -289,3 +289,75 @@ func TestKeyReadsRejectCorruptPersistedTimestamps(t *testing.T) {
 		})
 	}
 }
+
+func TestKeyReadsRejectCorruptPersistedIdentityAndTimeRelationships(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *sqlite.Store, Key)
+	}{
+		{
+			name: "invalid identifier",
+			mutate: func(t *testing.T, s *sqlite.Store, key Key) {
+				t.Helper()
+				if _, err := s.DB.Exec(`UPDATE api_keys SET id='bad/id' WHERE id=?`, key.ID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "last-used precedes creation",
+			mutate: func(t *testing.T, s *sqlite.Store, key Key) {
+				t.Helper()
+				beforeCreation := key.CreatedAt.Add(-time.Second).Format(time.RFC3339Nano)
+				if _, err := s.DB.Exec(`UPDATE api_keys SET last_used_at=? WHERE id=?`, beforeCreation, key.ID); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			m := New(s)
+			key, secret, err := m.CreateNamed(context.Background(), "operator", []string{"inference"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(t, s, key)
+
+			if _, err = m.Verify(context.Background(), secret, "inference"); err == nil {
+				t.Fatal("Verify accepted corrupt persisted key metadata")
+			}
+			if _, err = m.List(context.Background()); err == nil {
+				t.Fatal("List accepted corrupt persisted key metadata")
+			}
+		})
+	}
+}
+
+func TestKeyMutationsRejectMalformedIdentifiersWithoutDatabaseWork(t *testing.T) {
+	s, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(s)
+	if _, _, err = m.Create(context.Background(), []string{"inference"}); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, id := range []string{"", "short", strings.Repeat("a", 23), strings.Repeat("a", 25), strings.Repeat("a", 23) + "-"} {
+		if err = m.SetEnabled(context.Background(), id, false); !errors.Is(err, ErrInvalidKeyID) {
+			t.Fatalf("SetEnabled(%q) = %v, want ErrInvalidKeyID", id, err)
+		}
+		if err = m.Delete(context.Background(), id); !errors.Is(err, ErrInvalidKeyID) {
+			t.Fatalf("Delete(%q) = %v, want ErrInvalidKeyID", id, err)
+		}
+	}
+}

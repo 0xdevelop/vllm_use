@@ -23,11 +23,13 @@ const (
 	secretPrefix        = "vu_"
 	secretRandomLength  = 48
 	displayedPrefixSize = 11
+	keyIDLength         = 24
 	saltSize            = 16
 	hashSize            = 32
 )
 
 var ErrInvalidKey = errors.New("invalid API key")
+var ErrInvalidKeyID = errors.New("invalid API key ID")
 var ErrInsufficientScope = errors.New("insufficient scope")
 
 type Key struct {
@@ -184,6 +186,29 @@ func validDisplayedPrefix(prefix string) bool {
 	}
 	return true
 }
+
+func validKeyID(id string) bool {
+	if len(id) != keyIDLength {
+		return false
+	}
+	for i := range id {
+		if !strings.ContainsRune(alphabet, rune(id[i])) {
+			return false
+		}
+	}
+	return true
+}
+
+func validateKeyTimes(created time.Time, lastUsed *time.Time) error {
+	if created.IsZero() {
+		return errors.New("invalid persisted API key creation time")
+	}
+	if lastUsed != nil && lastUsed.Before(created) {
+		return errors.New("persisted API key last-used time precedes creation")
+	}
+	return nil
+}
+
 func (m *Manager) Verify(ctx context.Context, secret, need string) (*Key, error) {
 	if !validSecret(secret) {
 		return nil, ErrInvalidKey
@@ -203,6 +228,9 @@ func (m *Manager) Verify(ctx context.Context, secret, need string) (*Key, error)
 	}
 	if e != nil {
 		return nil, fmt.Errorf("lookup API key: %w", e)
+	}
+	if !validKeyID(k.ID) {
+		return nil, fmt.Errorf("decode API key ID: %w", ErrInvalidKeyID)
 	}
 	if err := validateKeyName(k.Name); err != nil {
 		return nil, fmt.Errorf("decode API key %q name: %w", k.ID, err)
@@ -228,6 +256,9 @@ func (m *Manager) Verify(ctx context.Context, secret, need string) (*Key, error)
 			return nil, fmt.Errorf("parse API key %q last-used time: %w", k.ID, parseErr)
 		}
 		k.LastUsedAt = &t
+	}
+	if e = validateKeyTimes(k.CreatedAt, k.LastUsedAt); e != nil {
+		return nil, fmt.Errorf("decode API key %q timestamps: %w", k.ID, e)
 	}
 	// Decode every persisted authorization field before doing the KDF or
 	// publishing an authenticated principal. Corrupt SQLite rows must fail
@@ -288,6 +319,9 @@ func (m *Manager) List(ctx context.Context) ([]Key, error) {
 		if e = rows.Scan(&k.ID, &k.Name, &k.Prefix, &en, &scopes, &c, &l); e != nil {
 			return nil, e
 		}
+		if !validKeyID(k.ID) {
+			return nil, fmt.Errorf("decode API key ID: %w", ErrInvalidKeyID)
+		}
 		if err := validateKeyName(k.Name); err != nil {
 			return nil, fmt.Errorf("decode API key %q name: %w", k.ID, err)
 		}
@@ -313,11 +347,17 @@ func (m *Manager) List(ctx context.Context) ([]Key, error) {
 			}
 			k.LastUsedAt = &t
 		}
+		if e = validateKeyTimes(k.CreatedAt, k.LastUsedAt); e != nil {
+			return nil, fmt.Errorf("decode API key %q timestamps: %w", k.ID, e)
+		}
 		out = append(out, k)
 	}
 	return out, rows.Err()
 }
 func (m *Manager) SetEnabled(ctx context.Context, id string, enabled bool) error {
+	if !validKeyID(id) {
+		return ErrInvalidKeyID
+	}
 	v := 0
 	if enabled {
 		v = 1
@@ -333,6 +373,9 @@ func (m *Manager) SetEnabled(ctx context.Context, id string, enabled bool) error
 	return nil
 }
 func (m *Manager) Delete(ctx context.Context, id string) error {
+	if !validKeyID(id) {
+		return ErrInvalidKeyID
+	}
 	res, e := m.s.DB.ExecContext(ctx, `DELETE FROM api_keys WHERE id=?`, id)
 	if e != nil {
 		return e
