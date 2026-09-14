@@ -21,12 +21,13 @@ import (
 	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 	"github.com/0xdevelop/vllm-use/internal/huggingface"
+	"github.com/0xdevelop/vllm-use/internal/modelid"
 )
 
 const (
 	MethodList        = "models.list"
 	MaxModelNameBytes = 256
-	maxModelIDBytes   = 128
+	ModelIDLength     = modelid.Length
 	maxModelPathBytes = 4096
 )
 
@@ -138,6 +139,11 @@ func validateModelName(name string) error {
 	}
 	return nil
 }
+
+func validateModelID(id string) error {
+	return modelid.Validate(id)
+}
+
 func (r *Registry) add(ctx context.Context, m Model) (Model, error) {
 	var err error
 	m.ID, err = newID()
@@ -153,6 +159,9 @@ func (r *Registry) add(ctx context.Context, m Model) (Model, error) {
 	return m, nil
 }
 func (r *Registry) Get(ctx context.Context, id string) (Model, error) {
+	if err := validateModelID(id); err != nil {
+		return Model{}, err
+	}
 	return scanModel(r.store.DB.QueryRowContext(ctx, selectModel+` WHERE id=?`, id), r.root)
 }
 
@@ -218,7 +227,7 @@ func scanModel(row scanner, root string) (Model, error) {
 }
 
 func validatePersistedModel(root string, m Model) error {
-	if err := validateModelText("id", m.ID, maxModelIDBytes); err != nil {
+	if err := validateModelID(m.ID); err != nil {
 		return err
 	}
 	if m.Name != strings.TrimSpace(m.Name) {

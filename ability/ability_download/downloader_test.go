@@ -242,7 +242,7 @@ func TestDownloadRejectsAcceptanceWhenSQLitePersistenceFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = store.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-1','huggingface','org/model',NULL,?,'model','org/model','',0,'registered',?)`, now, now); err != nil {
+	if _, err = store.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('11111111111111111111111111111111','huggingface','org/model',NULL,?,'model','org/model','',0,'registered',?)`, now, now); err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
@@ -254,7 +254,7 @@ func TestDownloadRejectsAcceptanceWhenSQLitePersistenceFails(t *testing.T) {
 	downloader := New("hf", runner)
 	downloader.SetRoot(root)
 	downloader.SetStore(store)
-	_, err = downloader.DownloadModel(context.Background(), "job-1", "model-1", "")
+	_, err = downloader.DownloadModel(context.Background(), "job-1", "11111111111111111111111111111111", "")
 	if err == nil || !strings.Contains(err.Error(), "persist download acceptance") {
 		t.Fatalf("persistence failure = %v", err)
 	}
@@ -269,14 +269,14 @@ func TestDownloadRejectsAcceptanceWhenSQLitePersistenceFails(t *testing.T) {
 		t.Fatalf("download acceptance was not rolled back: count=%d err=%v", jobs, err)
 	}
 	var status string
-	if err = store.DB.QueryRow(`SELECT status FROM models WHERE id='model-1'`).Scan(&status); err != nil || status != "registered" {
+	if err = store.DB.QueryRow(`SELECT status FROM models WHERE id='11111111111111111111111111111111'`).Scan(&status); err != nil || status != "registered" {
 		t.Fatalf("model state changed after rejected acceptance: status=%q err=%v", status, err)
 	}
 }
 
 func TestTerminalPersistenceIsAtomicWithLinkedModel(t *testing.T) {
 	root := t.TempDir()
-	destination := filepath.Join(root, "model-1")
+	destination := filepath.Join(root, "11111111111111111111111111111111")
 	if err := os.Mkdir(destination, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -289,10 +289,10 @@ func TestTerminalPersistenceIsAtomicWithLinkedModel(t *testing.T) {
 	}
 	defer store.Close()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = store.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-1','huggingface','org/model',NULL,?,'model','org/model','',0,'downloading',?)`, now, now); err != nil {
+	if _, err = store.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('11111111111111111111111111111111','huggingface','org/model',NULL,?,'model','org/model','',0,'downloading',?)`, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.DB.Exec(`INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES('job-1','model-1','org/model','',?,'running',0,'','[]',?,NULL,?,?)`, destination, now, now, now); err != nil {
+	if _, err = store.DB.Exec(`INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES('job-1','11111111111111111111111111111111','org/model','',?,'running',0,'','[]',?,NULL,?,?)`, destination, now, now, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = store.DB.Exec(`CREATE TRIGGER reject_model_ready BEFORE UPDATE OF status ON models WHEN NEW.status='ready' BEGIN SELECT RAISE(ABORT, 'forced terminal persistence failure'); END`); err != nil {
@@ -306,7 +306,7 @@ func TestTerminalPersistenceIsAtomicWithLinkedModel(t *testing.T) {
 	if !ok {
 		t.Fatal("restored job missing")
 	}
-	if job.ModelID != "model-1" {
+	if job.ModelID != "11111111111111111111111111111111" {
 		t.Fatalf("restored model association = %q", job.ModelID)
 	}
 	// Restore truthfully converts an interrupted job to canceled, so put both
@@ -314,13 +314,13 @@ func TestTerminalPersistenceIsAtomicWithLinkedModel(t *testing.T) {
 	job.State = Running
 	job.Error = ""
 	job.FinishedAt = nil
-	if _, err = store.DB.Exec(`UPDATE downloads SET state='running',error='',finished_at=NULL WHERE id='job-1'; UPDATE models SET status='downloading' WHERE id='model-1'`); err != nil {
+	if _, err = store.DB.Exec(`UPDATE downloads SET state='running',error='',finished_at=NULL WHERE id='job-1'; UPDATE models SET status='downloading' WHERE id='11111111111111111111111111111111'`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = store.DB.Exec(`UPDATE models SET status='ready' WHERE id='model-1'`); err == nil {
+	if _, err = store.DB.Exec(`UPDATE models SET status='ready' WHERE id='11111111111111111111111111111111'`); err == nil {
 		t.Fatal("terminal persistence trigger fixture did not reject ready state")
 	}
-	if _, err = store.DB.Exec(`UPDATE models SET status='downloading' WHERE id='model-1'`); err != nil {
+	if _, err = store.DB.Exec(`UPDATE models SET status='downloading' WHERE id='11111111111111111111111111111111'`); err != nil {
 		t.Fatal(err)
 	}
 	localPath, size, checkErr := downloader.completedDownload(destination)
@@ -332,16 +332,16 @@ func TestTerminalPersistenceIsAtomicWithLinkedModel(t *testing.T) {
 		t.Fatalf("terminal transaction result = %v", persistErr)
 	}
 	job.State = Running
-	if _, err = store.DB.Exec(`UPDATE models SET status='ready' WHERE id='model-1'`); err == nil {
+	if _, err = store.DB.Exec(`UPDATE models SET status='ready' WHERE id='11111111111111111111111111111111'`); err == nil {
 		t.Fatal("ready-state trigger disappeared after transactional rollback")
 	}
-	if _, err = store.DB.Exec(`UPDATE models SET status='downloading' WHERE id='model-1'`); err != nil {
+	if _, err = store.DB.Exec(`UPDATE models SET status='downloading' WHERE id='11111111111111111111111111111111'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = store.DB.Exec(`CREATE TRIGGER reject_job_succeeded BEFORE UPDATE OF state ON downloads WHEN NEW.state='succeeded' BEGIN SELECT RAISE(ABORT, 'forced job terminal persistence failure'); END`); err != nil {
 		t.Fatal(err)
 	}
-	if job.ModelID != "model-1" || job.Destination != destination {
+	if job.ModelID != "11111111111111111111111111111111" || job.Destination != destination {
 		t.Fatalf("job changed before finish: %#v", job)
 	}
 	if err = downloader.finish(job, Succeeded, nil); err == nil || !strings.Contains(err.Error(), "forced job terminal persistence failure") {
@@ -351,7 +351,7 @@ func TestTerminalPersistenceIsAtomicWithLinkedModel(t *testing.T) {
 	if err = store.DB.QueryRow(`SELECT state FROM downloads WHERE id='job-1'`).Scan(&jobState); err != nil {
 		t.Fatal(err)
 	}
-	if err = store.DB.QueryRow(`SELECT status FROM models WHERE id='model-1'`).Scan(&modelState); err != nil {
+	if err = store.DB.QueryRow(`SELECT status FROM models WHERE id='11111111111111111111111111111111'`).Scan(&modelState); err != nil {
 		t.Fatal(err)
 	}
 	if jobState != "running" || modelState != "downloading" {
@@ -568,14 +568,14 @@ func TestRegisteredModelDownloadLifecycleAndRestore(t *testing.T) {
 	}
 	defer s.Close()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = s.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-id','huggingface','org/model',NULL,?,'model','org/model','main',0,'registered',?)`, now, now)
+	_, err = s.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('22222222222222222222222222222222','huggingface','org/model',NULL,?,'model','org/model','main',0,'registered',?)`, now, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
 	d.SetRoot(root)
 	d.SetStore(s)
-	j, err := d.DownloadRequest(context.Background(), Request{ID: "linked", ModelID: "model-id", Repository: "org/model", Destination: destination})
+	j, err := d.DownloadRequest(context.Background(), Request{ID: "linked", ModelID: "22222222222222222222222222222222", Repository: "org/model", Destination: destination})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -585,7 +585,7 @@ func TestRegisteredModelDownloadLifecycleAndRestore(t *testing.T) {
 	waitForState(t, d, "linked", Succeeded)
 	var status, path string
 	var size int64
-	if err = s.DB.QueryRow(`SELECT status,COALESCE(local_path,''),size_bytes FROM models WHERE id='model-id'`).Scan(&status, &path, &size); err != nil {
+	if err = s.DB.QueryRow(`SELECT status,COALESCE(local_path,''),size_bytes FROM models WHERE id='22222222222222222222222222222222'`).Scan(&status, &path, &size); err != nil {
 		t.Fatal(err)
 	}
 	if status != "ready" || path != destination || size != 5 {
@@ -595,17 +595,17 @@ func TestRegisteredModelDownloadLifecycleAndRestore(t *testing.T) {
 	if err = s.DB.QueryRow(`SELECT COALESCE(model_id,''),revision FROM downloads WHERE id='linked'`).Scan(&modelID, &revision); err != nil {
 		t.Fatal(err)
 	}
-	if modelID != "model-id" || revision != "main" {
+	if modelID != "22222222222222222222222222222222" || revision != "main" {
 		t.Fatalf("persisted relationship %q %q", modelID, revision)
 	}
-	_, err = s.DB.Exec(`UPDATE downloads SET state='running',finished_at=NULL WHERE id='linked'; UPDATE models SET status='downloading' WHERE id='model-id'`)
+	_, err = s.DB.Exec(`UPDATE downloads SET state='running',finished_at=NULL WHERE id='linked'; UPDATE models SET status='downloading' WHERE id='22222222222222222222222222222222'`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	restored := New("hf", &fakeRunner{cmd: &fakeCmd{}})
 	restored.SetStore(s)
 	waitForState(t, restored, "linked", Canceled)
-	if err = s.DB.QueryRow(`SELECT status FROM models WHERE id='model-id'`).Scan(&status); err != nil || status != "canceled" {
+	if err = s.DB.QueryRow(`SELECT status FROM models WHERE id='22222222222222222222222222222222'`).Scan(&status); err != nil || status != "canceled" {
 		t.Fatalf("restored model status %q err=%v", status, err)
 	}
 }
@@ -619,7 +619,7 @@ func TestSuccessfulCommandWithoutModelFilesFailsLinkedDownload(t *testing.T) {
 	}
 	defer st.Close()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-id','huggingface','org/model',NULL,?,'model','org/model','',0,'registered',?)`, now, now)
+	_, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('22222222222222222222222222222222','huggingface','org/model',NULL,?,'model','org/model','',0,'registered',?)`, now, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -627,7 +627,7 @@ func TestSuccessfulCommandWithoutModelFilesFailsLinkedDownload(t *testing.T) {
 	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
 	d.SetRoot(root)
 	d.SetStore(st)
-	if _, err = d.DownloadRequest(context.Background(), Request{ID: "empty-success", ModelID: "model-id", Repository: "org/model", Destination: destination}); err != nil {
+	if _, err = d.DownloadRequest(context.Background(), Request{ID: "empty-success", ModelID: "22222222222222222222222222222222", Repository: "org/model", Destination: destination}); err != nil {
 		t.Fatal(err)
 	}
 	waitForState(t, d, "empty-success", Failed)
@@ -636,7 +636,7 @@ func TestSuccessfulCommandWithoutModelFilesFailsLinkedDownload(t *testing.T) {
 		t.Fatalf("job error = %q", job.Error)
 	}
 	var status, localPath string
-	if err = st.DB.QueryRow(`SELECT status,COALESCE(local_path,'') FROM models WHERE id='model-id'`).Scan(&status, &localPath); err != nil {
+	if err = st.DB.QueryRow(`SELECT status,COALESCE(local_path,'') FROM models WHERE id='22222222222222222222222222222222'`).Scan(&status, &localPath); err != nil {
 		t.Fatal(err)
 	}
 	if status != "error" || localPath != "" {
@@ -655,9 +655,9 @@ func TestDownloadModelDerivesAuthoritativeSourceAndDestination(t *testing.T) {
 	for _, row := range []struct {
 		id, kind, repository, revision, status string
 	}{
-		{"hf-model", "huggingface", "org/from-db", "v2", "registered"},
-		{"local-model", "local", "", "", "ready"},
-		{"ready-model", "huggingface", "org/ready", "", "ready"},
+		{"33333333333333333333333333333333", "huggingface", "org/from-db", "v2", "registered"},
+		{"44444444444444444444444444444444", "local", "", "", "ready"},
+		{"55555555555555555555555555555555", "huggingface", "org/ready", "", "ready"},
 	} {
 		_, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, row.id, row.kind, row.repository, nil, now, row.id, row.repository, row.revision, 0, row.status, now)
 		if err != nil {
@@ -667,20 +667,20 @@ func TestDownloadModelDerivesAuthoritativeSourceAndDestination(t *testing.T) {
 	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
 	d.SetRoot(root)
 	d.SetStore(st)
-	job, err := d.DownloadModel(context.Background(), "job", "hf-model", "")
+	job, err := d.DownloadModel(context.Background(), "job", "33333333333333333333333333333333", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.Repo != "org/from-db" || job.Revision != "v2" || job.Destination != filepath.Join(root, "hf-model") {
+	if job.Repo != "org/from-db" || job.Revision != "v2" || job.Destination != filepath.Join(root, "33333333333333333333333333333333") {
 		t.Fatalf("derived job = %#v", job)
 	}
 	for _, tc := range []struct {
 		name, modelID, contains string
 	}{
-		{"missing", "missing", "not found"},
-		{"local", "local-model", "Hugging Face"},
-		{"ready", "ready-model", "already ready"},
-		{"path injection", "../escape", "invalid model id"},
+		{"missing", "66666666666666666666666666666666", "not found"},
+		{"local", "44444444444444444444444444444444", "Hugging Face"},
+		{"ready", "55555555555555555555555555555555", "already ready"},
+		{"path injection", "../escape", "model ID"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if _, gotErr := d.DownloadModel(context.Background(), "other-"+tc.name, tc.modelID, ""); gotErr == nil || !strings.Contains(gotErr.Error(), tc.contains) {
@@ -698,14 +698,14 @@ func TestRetryRejectsModelThatIsAlreadyReady(t *testing.T) {
 	}
 	defer st.Close()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	destination := filepath.Join(root, "model-id")
+	destination := filepath.Join(root, "22222222222222222222222222222222")
 	if err = os.Mkdir(destination, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-id','huggingface','org/model',?,?,'model','org/model','main',1,'ready',?)`, destination, now, now); err != nil {
+	if _, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('22222222222222222222222222222222','huggingface','org/model',?,?,'model','org/model','main',1,'ready',?)`, destination, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.DB.Exec(`INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES('old-job','model-id','org/model','main',?,'failed',0,'old failure','[]',?,?,?,?)`, destination, now, now, now, now); err != nil {
+	if _, err = st.DB.Exec(`INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES('old-job','22222222222222222222222222222222','org/model','main',?,'failed',0,'old failure','[]',?,?,?,?)`, destination, now, now, now, now); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{cmd: &fakeCmd{}}
@@ -732,17 +732,17 @@ func TestRetryUsesCurrentRegisteredModelAuthority(t *testing.T) {
 	}
 	defer st.Close()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	destination := filepath.Join(root, "model-id")
+	destination := filepath.Join(root, "22222222222222222222222222222222")
 	if err = os.Mkdir(destination, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err = os.WriteFile(filepath.Join(destination, "weights"), []byte("current"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-id','huggingface','org/current',NULL,?,'model','org/current','v2',0,'error',?)`, now, now); err != nil {
+	if _, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('22222222222222222222222222222222','huggingface','org/current',NULL,?,'model','org/current','v2',0,'error',?)`, now, now); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.DB.Exec(`INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES('old-job','model-id','org/stale','v1','/outside/stale','failed',0,'old failure','[]',?,?,?,?)`, now, now, now, now); err != nil {
+	if _, err = st.DB.Exec(`INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES('old-job','22222222222222222222222222222222','org/stale','v1','/outside/stale','failed',0,'old failure','[]',?,?,?,?)`, now, now, now, now); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{cmd: &fakeCmd{}}
@@ -773,18 +773,18 @@ func TestLinkedAcceptanceAtomicallyRejectsIneligibleModelState(t *testing.T) {
 	}
 	defer st.Close()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	destination := filepath.Join(root, "model-id")
+	destination := filepath.Join(root, "22222222222222222222222222222222")
 	if err = os.Mkdir(destination, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('model-id','huggingface','org/model',?,?,'model','org/model','main',1,'ready',?)`, destination, now, now); err != nil {
+	if _, err = st.DB.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES('22222222222222222222222222222222','huggingface','org/model',?,?,'model','org/model','main',1,'ready',?)`, destination, now, now); err != nil {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{cmd: &fakeCmd{}}
 	d := New("hf", runner)
 	d.SetRoot(root)
 	d.SetStore(st)
-	_, err = d.DownloadRequest(context.Background(), Request{ID: "stale-acceptance", ModelID: "model-id", Repository: "org/model", Revision: "main", Destination: destination})
+	_, err = d.DownloadRequest(context.Background(), Request{ID: "stale-acceptance", ModelID: "22222222222222222222222222222222", Repository: "org/model", Revision: "main", Destination: destination})
 	if err == nil || !strings.Contains(err.Error(), "not available for download") {
 		t.Fatalf("linked acceptance result = %v", err)
 	}

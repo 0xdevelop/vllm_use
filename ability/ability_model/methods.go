@@ -5,6 +5,7 @@ import (
 
 	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
 	"github.com/0xdevelop/vllm-use/internal/huggingface"
+	"github.com/0xdevelop/vllm-use/internal/modelid"
 )
 
 const (
@@ -25,7 +26,7 @@ func LoadManagementMethods() {
 	add(MethodScan, "扫描模型目录", nil, nil, func(ctx context.Context, _ interface{}) (interface{}, error) {
 		return registry().Scan(ctx)
 	})
-	add(MethodGet, "读取模型", map[string]interface{}{"id": stringSchema()}, []string{"id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+	add(MethodGet, "读取模型", map[string]interface{}{"id": modelIDSchema()}, []string{"id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
 		var in struct {
 			ID string `json:"id"`
 		}
@@ -54,7 +55,7 @@ func LoadManagementMethods() {
 		}
 		return registry().RegisterLocal(ctx, in.Name, in.Path)
 	})
-	add(MethodDelete, "删除模型", map[string]interface{}{"id": stringSchema(), "files": map[string]interface{}{"type": "boolean"}}, []string{"id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+	add(MethodDelete, "删除模型", map[string]interface{}{"id": modelIDSchema(), "files": map[string]interface{}{"type": "boolean"}}, []string{"id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
 		var in struct {
 			ID    string `json:"id"`
 			Files bool   `json:"files"`
@@ -87,6 +88,9 @@ func add(name, description string, properties map[string]interface{}, required [
 	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{Name: name, Description: description, Scope: "mcp.models", InputSchema: api_supported_methods.ObjectSchema(properties, required), Execute: execute})
 }
 func stringSchema() map[string]interface{} { return map[string]interface{}{"type": "string"} }
+func modelIDSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "string", "minLength": modelid.Length, "maxLength": modelid.Length, "pattern": modelid.Pattern}
+}
 func boundedStringSchema(maxLength int) map[string]interface{} {
 	return map[string]interface{}{"type": "string", "maxLength": maxLength}
 }

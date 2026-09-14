@@ -6,6 +6,7 @@ import (
 
 	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
 	"github.com/0xdevelop/vllm-use/db/sqlite"
+	"github.com/0xdevelop/vllm-use/internal/modelid"
 )
 
 const (
@@ -77,7 +78,7 @@ func LoadAPIMethods() {
 func requestProperties() map[string]interface{} {
 	return map[string]interface{}{
 		"id":       str(),
-		"model_id": str(),
+		"model_id": modelIDSchema(),
 		"token":    boundedString(4096),
 	}
 }
@@ -98,6 +99,9 @@ func add(name, description string, properties map[string]interface{}, required [
 	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{Name: name, Description: description, Scope: "mcp.models", InputSchema: api_supported_methods.ObjectSchema(properties, required), Execute: execute})
 }
 func str() map[string]interface{} { return map[string]interface{}{"type": "string"} }
+func modelIDSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "string", "minLength": modelid.Length, "maxLength": modelid.Length, "pattern": modelid.Pattern}
+}
 func boundedString(maxLength int) map[string]interface{} {
 	return map[string]interface{}{"type": "string", "maxLength": maxLength}
 }

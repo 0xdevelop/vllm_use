@@ -22,6 +22,7 @@ import (
 
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 	"github.com/0xdevelop/vllm-use/internal/huggingface"
+	"github.com/0xdevelop/vllm-use/internal/modelid"
 	"github.com/0xdevelop/vllm-use/internal/processenv"
 )
 
@@ -129,9 +130,8 @@ func (d *Downloader) Download(parent context.Context, id, repo, dest, token stri
 // record. Repository, revision and destination are deliberately not accepted
 // from the caller: SQLite and the configured models root are authoritative.
 func (d *Downloader) DownloadModel(parent context.Context, id, modelID, token string) (*Job, error) {
-	modelID = strings.TrimSpace(modelID)
-	if modelID == "" || len(modelID) > 128 || strings.ContainsAny(modelID, "\\/\x00\n\r	") {
-		return nil, errors.New("invalid model id")
+	if err := modelid.Validate(modelID); err != nil {
+		return nil, err
 	}
 	d.mu.RLock()
 	root, st := d.root, d.store
@@ -194,8 +194,11 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 	root := d.root
 	st := d.store
 	d.mu.RUnlock()
-	modelID := strings.TrimSpace(request.ModelID)
+	modelID := request.ModelID
 	if modelID != "" {
+		if err := modelid.Validate(modelID); err != nil {
+			return nil, err
+		}
 		if st == nil {
 			return nil, errors.New("model integration unavailable")
 		}
@@ -759,8 +762,8 @@ func (d *Downloader) validateRestoredJob(j *Job, created, updated string) error 
 	if j.ID == "" || len(j.ID) > 128 || strings.TrimSpace(j.ID) != j.ID || strings.ContainsAny(j.ID, "\\/\x00\n\r	") {
 		return errors.New("invalid id")
 	}
-	if j.ModelID != "" && (len(j.ModelID) > 128 || strings.TrimSpace(j.ModelID) != j.ModelID || strings.ContainsAny(j.ModelID, "\\/\x00\n\r	")) {
-		return errors.New("invalid model id")
+	if j.ModelID != "" && !modelid.Valid(j.ModelID) {
+		return modelid.ErrInvalid
 	}
 	normalizedRepo, err := huggingface.NormalizeRepository(j.Repo)
 	if err != nil || normalizedRepo != j.Repo {

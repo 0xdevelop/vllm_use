@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
+	"github.com/0xdevelop/vllm-use/internal/modelid"
 )
 
 const (
@@ -48,7 +49,7 @@ func LoadAPIMethods() {
 	directOptions := runtimeOptionsSchema(true)
 	add(MethodStart, "启动 vLLM Runtime", map[string]interface{}{"options": directOptions}, []string{"options"}, start(false))
 	add(MethodRestart, "重启 vLLM Runtime", map[string]interface{}{"options": directOptions}, []string{"options"}, start(true))
-	add(MethodSwitch, "切换活动模型", map[string]interface{}{"model_id": str(), "options": runtimeOptionsSchema(false)}, []string{"model_id", "options"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+	add(MethodSwitch, "切换活动模型", map[string]interface{}{"model_id": modelIDSchema(), "options": runtimeOptionsSchema(false)}, []string{"model_id", "options"}, func(ctx context.Context, input interface{}) (interface{}, error) {
 		var in struct {
 			ModelID string  `json:"model_id"`
 			Options Options `json:"options"`
@@ -92,7 +93,9 @@ func runtimeState() State {
 func add(name, description string, properties map[string]interface{}, required []string, execute func(context.Context, interface{}) (interface{}, error)) {
 	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{Name: name, Description: description, Scope: "mcp.runtime", InputSchema: api_supported_methods.ObjectSchema(properties, required), Execute: execute})
 }
-func str() map[string]interface{} { return map[string]interface{}{"type": "string"} }
+func modelIDSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "string", "minLength": modelid.Length, "maxLength": modelid.Length, "pattern": modelid.Pattern}
+}
 
 func runtimeOptionsSchema(requireModel bool) map[string]interface{} {
 	properties := map[string]interface{}{

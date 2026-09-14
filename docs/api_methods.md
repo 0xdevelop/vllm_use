@@ -99,6 +99,9 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
   "additionalProperties": false,
   "properties": {
     "id": {
+      "maxLength": 32,
+      "minLength": 32,
+      "pattern": "^[0-9a-f]{32}$",
       "type": "string"
     }
   },
@@ -204,6 +207,9 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
       "type": "boolean"
     },
     "id": {
+      "maxLength": 32,
+      "minLength": 32,
+      "pattern": "^[0-9a-f]{32}$",
       "type": "string"
     }
   },
@@ -271,6 +277,9 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
       "type": "string"
     },
     "model_id": {
+      "maxLength": 32,
+      "minLength": 32,
+      "pattern": "^[0-9a-f]{32}$",
       "type": "string"
     },
     "token": {
@@ -718,6 +727,9 @@ MCP 已注册 tool 的业务结果统一返回 `CallToolResult`，并显式输�
   "additionalProperties": false,
   "properties": {
     "model_id": {
+      "maxLength": 32,
+      "minLength": 32,
+      "pattern": "^[0-9a-f]{32}$",
       "type": "string"
     },
     "options": {

@@ -207,6 +207,8 @@ func TestRegistryRejectsCorruptPersistedModelMetadata(t *testing.T) {
 		value  any
 	}{
 		{name: "empty id", column: "id", value: ""},
+		{name: "noncanonical id", column: "id", value: strings.Repeat("A", ModelIDLength)},
+		{name: "path-like id", column: "id", value: "../../outside-quarantine"},
 		{name: "invalid name", column: "name", value: "bad\nname"},
 		{name: "inconsistent kind", column: "kind", value: "local"},
 		{name: "source mismatch", column: "source", value: "other/model"},
@@ -235,6 +237,48 @@ func TestRegistryRejectsCorruptPersistedModelMetadata(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestDeleteRejectsPathLikePersistedModelIDBeforeFilesystemChanges(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	root := filepath.Join(base, "models")
+	modelPath := filepath.Join(root, "local")
+	if err := os.MkdirAll(modelPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(modelPath, "weights.bin")
+	if err := os.WriteFile(marker, []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(filepath.Join(base, "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	registry := New(store, root)
+	model, err := registry.RegisterLocal(ctx, "local", modelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	malformedID := "../../outside-quarantine"
+	if _, err = store.DB.Exec(`UPDATE models SET id=? WHERE id=?`, malformedID, model.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = registry.Delete(ctx, malformedID, true); err == nil {
+		t.Fatal("Delete accepted a path-like persisted model ID")
+	}
+	if got, readErr := os.ReadFile(marker); readErr != nil || string(got) != "keep" {
+		t.Fatalf("model files changed after rejected delete: content=%q err=%v", got, readErr)
+	}
+	if _, statErr := os.Lstat(filepath.Join(base, "outside-quarantine")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("rejected delete created an out-of-quarantine stage: %v", statErr)
+	}
+	var count int
+	if err = store.DB.QueryRow(`SELECT COUNT(*) FROM models WHERE id=?`, malformedID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("rejected delete changed persistence: count=%d err=%v", count, err)
 	}
 }
 
