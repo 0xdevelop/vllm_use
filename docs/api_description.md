@@ -59,6 +59,8 @@ Gateway 不执行业务管理 Ability，也不伪造推理结果。upstream 不�
 - `/api/*`、`/mcp`、`/v1/*` 按上述规则认证。
 - 其余 GET 路由由嵌入的 React SPA 处理；后端命名空间不会回落为 SPA 假成功。
 
+所有管理控制面和推理数据面响应（包括认证、参数和 upstream 错误）都返回 `Cache-Control: no-store` 与兼容旧客户端的 `Pragma: no-cache`。Gateway 在提交响应头前重新覆盖 upstream 缓存策略，避免一次性 API key secret、模型管理数据、提示词和生成内容被浏览器或中间代理持久缓存；该策略不影响带内容哈希的 Web Admin 静态资源长期缓存。
+
 生产 Web 资源来自 `web/dist` 的 Go embed。运行不依赖 Node/Bun 或额外静态文件服务。
 
 ## 错误语义

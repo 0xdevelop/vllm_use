@@ -123,6 +123,7 @@ func (g *Gateway) finishRecord() {
 }
 
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	setNoStore(w.Header())
 	started := time.Now()
 	rid := auditRequestID(r.Header.Get("X-Request-ID"))
 	w.Header().Set("X-Request-ID", rid)
@@ -229,6 +230,15 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.proxy.ServeHTTP(w, r)
 }
 
+// setNoStore prevents inference prompts, generated output, and authentication
+// failures from being retained by clients or intermediaries. statusWriter
+// reapplies it immediately before headers are committed so an unsafe cache
+// policy supplied by vLLM is replaced rather than appended.
+func setNoStore(header http.Header) {
+	header.Set("Cache-Control", "no-store")
+	header.Set("Pragma", "no-cache")
+}
+
 func auditRequestID(value string) string {
 	if len(value) > 0 && len(value) <= maxAuditRequestIDBytes {
 		valid := true
@@ -274,6 +284,7 @@ func (s *statusWriter) WriteHeader(n int) {
 	}
 	s.wroteHeader = true
 	s.status = n
+	setNoStore(s.ResponseWriter.Header())
 	s.ResponseWriter.WriteHeader(n)
 }
 func (s *statusWriter) Write(p []byte) (int, error) {

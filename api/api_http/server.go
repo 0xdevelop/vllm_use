@@ -33,14 +33,51 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) { respond(w, map[string]string{"status": "ok"}, nil) })
 	if s.MCP != nil {
-		mux.Handle("/mcp", s.mcp(s.MCP))
+		mux.Handle("/mcp", noStore(s.mcp(s.MCP)))
 	}
-	mux.Handle("/api/", s.admin(http.HandlerFunc(s.api)))
+	mux.Handle("/api/", noStore(s.admin(http.HandlerFunc(s.api))))
 	if s.Web != nil {
 		mux.Handle("/", s.Web)
 	}
 	return security(mux)
 }
+
+// noStore keeps management data—including one-time API key secrets—out of
+// browser, reverse-proxy, and intermediary caches. It is deliberately scoped
+// to protected namespaces so immutable embedded UI assets remain cacheable.
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writer := &noStoreWriter{ResponseWriter: w}
+		writer.apply()
+		next.ServeHTTP(writer, r)
+	})
+}
+
+type noStoreWriter struct {
+	http.ResponseWriter
+	wroteHeader bool
+}
+
+func (w *noStoreWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+func (w *noStoreWriter) apply() {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+}
+func (w *noStoreWriter) WriteHeader(status int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
+	w.apply()
+	w.ResponseWriter.WriteHeader(status)
+}
+func (w *noStoreWriter) Write(payload []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(payload)
+}
+
 func security(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")

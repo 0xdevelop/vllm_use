@@ -70,6 +70,37 @@ func TestRoutingAuthStreamingAndErrors(t *testing.T) {
 	}
 }
 
+func TestGatewayResponsesAreNotCacheable(t *testing.T) {
+	u, _ := url.Parse("http://127.0.0.1:8000")
+	g := New(u, VerifyFunc(func(_ context.Context, key, scope string) (Principal, error) {
+		if key != "ok" || scope != "inference" {
+			return Principal{}, errors.New("bad credentials")
+		}
+		return Principal{KeyID: "key-cache"}, nil
+	}))
+	g.proxy.Transport = roundTrip(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Cache-Control": {"public, max-age=3600"}},
+			Body:       io.NopCloser(strings.NewReader(`{"id":"response"}`)),
+			Request:    r,
+		}, nil
+	})
+
+	for _, token := range []string{"ok", "wrong"} {
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{}`))
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		g.ServeHTTP(w, req)
+		if got := w.Header().Values("Cache-Control"); len(got) != 1 || got[0] != "no-store" {
+			t.Fatalf("token %q Cache-Control = %#v, want one no-store value", token, got)
+		}
+		if got := w.Header().Get("Pragma"); got != "no-cache" {
+			t.Fatalf("token %q Pragma = %q, want no-cache", token, got)
+		}
+	}
+}
+
 func TestGatewayRejectsAmbiguousClientCredentialsBeforeProxying(t *testing.T) {
 	u, _ := url.Parse("http://127.0.0.1:8000")
 	proxied := false

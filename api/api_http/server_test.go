@@ -132,6 +132,51 @@ func TestAdminAuthErrorsAndWebNamespace(t *testing.T) {
 	}
 }
 
+func TestProtectedManagementResponsesAreNotCacheable(t *testing.T) {
+	s, _ := testServer(t)
+	s.MCP = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	})
+	h := s.Handler()
+
+	for _, tc := range []struct {
+		name   string
+		method string
+		path   string
+		token  string
+		body   string
+	}{
+		{name: "admin success", method: http.MethodGet, path: "/api/models", token: "admin"},
+		{name: "admin authentication failure", method: http.MethodGet, path: "/api/models"},
+		{name: "mcp authentication failure", method: http.MethodPost, path: "/mcp", body: `{}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := request(t, h, tc.method, tc.path, tc.token, tc.body)
+			if got := w.Header().Get("Cache-Control"); got != "no-store" {
+				t.Fatalf("Cache-Control = %q, want no-store", got)
+			}
+			if got := w.Header().Get("Pragma"); got != "no-cache" {
+				t.Fatalf("Pragma = %q, want no-cache", got)
+			}
+		})
+	}
+
+	web := request(t, h, http.MethodGet, "/", "", "")
+	if got := web.Header().Get("Cache-Control"); got == "no-store" {
+		t.Fatal("public embedded UI unexpectedly disabled caching")
+	}
+
+	overriding := noStore(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=3600")
+		w.WriteHeader(http.StatusOK)
+	}))
+	w := httptest.NewRecorder()
+	overriding.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/mcp", nil))
+	if got := w.Header().Values("Cache-Control"); len(got) != 1 || got[0] != "no-store" {
+		t.Fatalf("inner handler overrode no-store policy: %#v", got)
+	}
+}
+
 func TestAdminAuthenticationRejectsAmbiguousAuthorizationHeaders(t *testing.T) {
 	s, _ := testServer(t)
 	h := s.Handler()
