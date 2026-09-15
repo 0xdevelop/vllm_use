@@ -133,6 +133,10 @@ func (d *Downloader) Download(parent context.Context, id, repo, dest, token stri
 // record. Repository, revision and destination are deliberately not accepted
 // from the caller: SQLite and the configured models root are authoritative.
 func (d *Downloader) DownloadModel(parent context.Context, id, modelID, token string) (*Job, error) {
+	return d.downloadModel(parent, id, modelID, token, false)
+}
+
+func (d *Downloader) downloadModel(parent context.Context, id, modelID, token string, retry bool) (*Job, error) {
 	if err := modelid.Validate(modelID); err != nil {
 		return nil, err
 	}
@@ -156,14 +160,14 @@ func (d *Downloader) DownloadModel(parent context.Context, id, modelID, token st
 	default:
 		return nil, errors.New("model is not available for download")
 	}
-	return d.DownloadRequest(parent, Request{
+	return d.downloadRequest(parent, Request{
 		ID:          id,
 		ModelID:     modelID,
 		Repository:  repository,
 		Revision:    revision,
 		Destination: filepath.Join(root, modelID),
 		Token:       token,
-	})
+	}, retry)
 }
 
 type Request struct {
@@ -176,6 +180,10 @@ type Request struct {
 }
 
 func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*Job, error) {
+	return d.downloadRequest(parent, request, false)
+}
+
+func (d *Downloader) downloadRequest(parent context.Context, request Request, retry bool) (*Job, error) {
 	id, repo, dest, token := request.ID, request.Repository, request.Destination, request.Token
 	id = strings.TrimSpace(id)
 	if id == "" || len(id) > 128 || strings.ContainsAny(id, "\\/\x00\n\r	") {
@@ -228,9 +236,18 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 		d.mu.Unlock()
 		return nil, errors.New("download service is shutting down")
 	}
-	if j := d.jobs[id]; j != nil && (j.State == Running || j.State == Pending) {
-		d.mu.Unlock()
-		return nil, errors.New("download already running")
+	if existing := d.jobs[id]; existing != nil {
+		if existing.State == Running || existing.State == Pending {
+			d.mu.Unlock()
+			return nil, errors.New("download already running")
+		}
+		// A download ID is a durable audit identity. Normal starts must never
+		// rewrite a terminal row with a different attempt. Retry is the only
+		// operation allowed to reuse it, and only for the same registered model.
+		if !retry || existing.ModelID == "" || existing.ModelID != modelID {
+			d.mu.Unlock()
+			return nil, errors.New("download id already exists")
+		}
 	}
 	for _, existing := range d.jobs {
 		if (existing.State == Running || existing.State == Pending) && filepath.Clean(existing.Destination) == filepath.Clean(dest) {
@@ -262,7 +279,7 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 		now := time.Now().UTC()
 		j.StartedAt = &now
 	}
-	if err := d.persistAcceptanceLocked(parent, j); err != nil {
+	if err := d.persistAcceptanceLocked(parent, j, retry); err != nil {
 		cancel()
 		if acquiredWorker {
 			<-d.workers
@@ -935,7 +952,7 @@ func (d *Downloader) Retry(ctx context.Context, id, token string) (*Job, error) 
 	// Resolve source, revision, destination and current eligibility from the
 	// registered model again. Persisted job fields are historical audit data and
 	// must not become authority for a new host-side download attempt.
-	return d.DownloadModel(ctx, id, j.ModelID, token)
+	return d.downloadModel(ctx, id, j.ModelID, token, true)
 }
 
 // Shutdown stops accepting new work, cancels every active download, and waits
@@ -974,7 +991,7 @@ func (d *Downloader) persist(j *Job) {
 // durable in one transaction before any host process is started. An
 // asynchronous download must never exist only in memory: otherwise a restart
 // loses the job while the Hugging Face process may still be writing files.
-func (d *Downloader) persistAcceptanceLocked(ctx context.Context, j *Job) error {
+func (d *Downloader) persistAcceptanceLocked(ctx context.Context, j *Job, retry bool) error {
 	if d.store == nil {
 		return nil
 	}
@@ -992,7 +1009,19 @@ func (d *Downloader) persistAcceptanceLocked(ctx context.Context, j *Job) error 
 	if j.StartedAt != nil {
 		started = j.StartedAt.Format(time.RFC3339Nano)
 	}
-	if _, err = tx.ExecContext(ctx, downloadUpsertSQL, j.ID, nullValue(j.ModelID), j.Repo, j.Revision, j.Destination, string(j.State), j.Progress, j.Error, string(logs), started, nil, now, now); err != nil {
+	if retry {
+		result, updateErr := tx.ExecContext(ctx, downloadRetrySQL, nullValue(j.ModelID), j.Repo, j.Revision, j.Destination, string(j.State), j.Progress, j.Error, string(logs), started, nil, now, j.ID, j.ModelID)
+		if updateErr != nil {
+			return updateErr
+		}
+		rows, rowsErr := result.RowsAffected()
+		if rowsErr != nil {
+			return rowsErr
+		}
+		if rows != 1 {
+			return errors.New("download is no longer eligible for retry")
+		}
+	} else if _, err = tx.ExecContext(ctx, downloadInsertSQL, j.ID, nullValue(j.ModelID), j.Repo, j.Revision, j.Destination, string(j.State), j.Progress, j.Error, string(logs), started, nil, now, now); err != nil {
 		return err
 	}
 	if j.ModelID != "" {
@@ -1015,7 +1044,11 @@ func (d *Downloader) persistAcceptanceLocked(ctx context.Context, j *Job) error 
 	return tx.Commit()
 }
 
-const downloadUpsertSQL = `INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET model_id=excluded.model_id,repository=excluded.repository,revision=excluded.revision,destination=excluded.destination,state=excluded.state,progress=excluded.progress,error=excluded.error,logs=excluded.logs,started_at=excluded.started_at,finished_at=excluded.finished_at,updated_at=excluded.updated_at`
+const downloadInsertSQL = `INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`
+
+const downloadRetrySQL = `UPDATE downloads SET model_id=?,repository=?,revision=?,destination=?,state=?,progress=?,error=?,logs=?,started_at=?,finished_at=?,updated_at=? WHERE id=? AND model_id=? AND state IN ('failed','canceled')`
+
+const downloadUpsertSQL = downloadInsertSQL + ` ON CONFLICT(id) DO UPDATE SET model_id=excluded.model_id,repository=excluded.repository,revision=excluded.revision,destination=excluded.destination,state=excluded.state,progress=excluded.progress,error=excluded.error,logs=excluded.logs,started_at=excluded.started_at,finished_at=excluded.finished_at,updated_at=excluded.updated_at`
 
 func (d *Downloader) persistLocked(j *Job) error {
 	if d.store == nil {

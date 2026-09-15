@@ -1118,6 +1118,74 @@ func TestConcurrentDestinationRejected(t *testing.T) {
 	}
 }
 
+func TestNewDownloadCannotOverwriteTerminalJobIdentity(t *testing.T) {
+	root := t.TempDir()
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	runner := &fakeRunner{cmd: &fakeCmd{wait: errors.New("first attempt failed")}}
+	d := New("hf", runner)
+	d.SetRoot(root)
+	if err = d.SetStore(store); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.Download(context.Background(), "stable-job", "org/first", filepath.Join(root, "first"), ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, d, "stable-job", Failed)
+
+	if _, err = d.Download(context.Background(), "stable-job", "org/second", filepath.Join(root, "second"), ""); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("terminal job identity reuse result = %v", err)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("reused job identity reached host CLI: calls=%d", runner.calls)
+	}
+	var repository, destination, state string
+	if err = store.DB.QueryRow(`SELECT repository,destination,state FROM downloads WHERE id='stable-job'`).Scan(&repository, &destination, &state); err != nil {
+		t.Fatal(err)
+	}
+	if repository != "org/first" || destination != filepath.Join(root, "first") || state != string(Failed) {
+		t.Fatalf("terminal audit row overwritten: repository=%q destination=%q state=%q", repository, destination, state)
+	}
+}
+
+func TestNewDownloadCannotOverwriteTerminalJobInsertedAfterRestore(t *testing.T) {
+	root := t.TempDir()
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	runner := &fakeRunner{cmd: &fakeCmd{}}
+	d := New("hf", runner)
+	d.SetRoot(root)
+	if err = d.SetStore(store); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = store.DB.Exec(`INSERT INTO downloads(id,repository,destination,state,progress,error,logs,finished_at,created_at,updated_at) VALUES('stable-job','org/original',?,'failed',0,'original failure','[]',?,?,?)`, filepath.Join(root, "original"), now, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err = d.Download(context.Background(), "stable-job", "org/replacement", filepath.Join(root, "replacement"), ""); err == nil || !strings.Contains(err.Error(), "persist download acceptance") {
+		t.Fatalf("terminal job inserted after restore reuse result = %v", err)
+	}
+	if runner.calls != 0 {
+		t.Fatalf("conflicting durable identity reached host CLI: calls=%d", runner.calls)
+	}
+	var repository, destination, state, jobError string
+	if err = store.DB.QueryRow(`SELECT repository,destination,state,error FROM downloads WHERE id='stable-job'`).Scan(&repository, &destination, &state, &jobError); err != nil {
+		t.Fatal(err)
+	}
+	if repository != "org/original" || destination != filepath.Join(root, "original") || state != string(Failed) || jobError != "original failure" {
+		t.Fatalf("durable audit row overwritten: repository=%q destination=%q state=%q error=%q", repository, destination, state, jobError)
+	}
+}
+
 type lifecycleRunner struct {
 	started chan struct{}
 }

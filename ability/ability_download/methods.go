@@ -30,7 +30,7 @@ type StartRequest struct {
 
 func LoadAPIMethods() {
 	add(MethodList, "列出下载任务", nil, nil, func(context.Context, interface{}) (interface{}, error) { return downloader().List(), nil })
-	add(MethodStart, "从已登记模型启动下载", requestProperties(), []string{"id", "model_id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+	add(MethodStart, "从已登记模型启动新下载（任务 ID 不可复用）", requestProperties(), []string{"id", "model_id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
 		var in StartRequest
 		if err := api_supported_methods.DecodeArguments(input, &in); err != nil {
 			return nil, err
