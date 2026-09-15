@@ -162,6 +162,74 @@ func TestVerifyDoesNotRequireSpareDatabaseConnection(t *testing.T) {
 	}
 }
 
+func TestVerifiedUseFailsClosedWhenKeyWasRevokedAfterLookup(t *testing.T) {
+	for _, mutation := range []struct {
+		name string
+		run  func(context.Context, *Manager, string) error
+	}{
+		{name: "disabled", run: func(ctx context.Context, m *Manager, id string) error {
+			return m.SetEnabled(ctx, id, false)
+		}},
+		{name: "deleted", run: func(ctx context.Context, m *Manager, id string) error {
+			return m.Delete(ctx, id)
+		}},
+	} {
+		t.Run(mutation.name, func(t *testing.T) {
+			s, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer s.Close()
+			m := New(s)
+			key, secret, err := m.Create(context.Background(), []string{"inference"})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Capture the same validated row snapshot Verify uses before its
+			// deliberately expensive scrypt derivation, then revoke the key.
+			// Committing that stale verification must not authenticate it.
+			verified, snapshot, err := m.lookupVerifiedKey(context.Background(), secret, "inference")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = mutation.run(context.Background(), m, key.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err = m.commitVerifiedUse(context.Background(), verified, snapshot); !errors.Is(err, ErrInvalidKey) {
+				t.Fatalf("stale verification committed after key was %s: %v", mutation.name, err)
+			}
+		})
+	}
+}
+
+func TestVerifiedUseDoesNotRegressLastUsedTimestamp(t *testing.T) {
+	s, err := sqlite.Open(filepath.Join(t.TempDir(), "db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	m := New(s)
+	_, secret, err := m.Create(context.Background(), []string{"inference"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, snapshot, err := m.lookupVerifiedKey(context.Background(), secret, "inference")
+	if err != nil {
+		t.Fatal(err)
+	}
+	later := key.CreatedAt.Add(2 * time.Hour).UTC()
+	if _, err = s.DB.Exec(`UPDATE api_keys SET last_used_at=? WHERE id=?`, later.Format(time.RFC3339Nano), key.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.commitVerifiedUseAt(context.Background(), key, snapshot, key.CreatedAt.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if key.LastUsedAt == nil || !key.LastUsedAt.Equal(later) {
+		t.Fatalf("last-used timestamp regressed: got %v, want %v", key.LastUsedAt, later)
+	}
+}
+
 func TestKeyReadsRejectCorruptPersistedAuthorizationMetadata(t *testing.T) {
 	tests := []struct {
 		name       string

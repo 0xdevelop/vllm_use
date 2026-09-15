@@ -209,76 +209,115 @@ func validateKeyTimes(created time.Time, lastUsed *time.Time) error {
 	return nil
 }
 
+type verifiedKeySnapshot struct {
+	name, prefix, scopes, created string
+	salt, hash                    []byte
+}
+
 func (m *Manager) Verify(ctx context.Context, secret, need string) (*Key, error) {
+	key, snapshot, err := m.lookupVerifiedKey(ctx, secret, need)
+	if err != nil {
+		return nil, err
+	}
+	if err = m.commitVerifiedUse(ctx, key, snapshot); err != nil {
+		return nil, err
+	}
+	return key, nil
+}
+
+func (m *Manager) lookupVerifiedKey(ctx context.Context, secret, need string) (*Key, verifiedKeySnapshot, error) {
 	if !validSecret(secret) {
-		return nil, ErrInvalidKey
+		return nil, verifiedKeySnapshot{}, ErrInvalidKey
 	}
 	// Prefix is unique. QueryRow closes its read cursor as soon as Scan returns,
 	// before the last-used write below. Keeping a Rows cursor open across that
 	// write makes authentication depend on a spare database connection and can
 	// deadlock a saturated pool when every verifier waits for its own update.
 	var k Key
-	var salt, want []byte
+	var snapshot verifiedKeySnapshot
 	var enabled int
-	var scopes, created string
 	var last sql.NullString
-	e := m.s.DB.QueryRowContext(ctx, `SELECT id,name,prefix,salt,hash,enabled,scopes,created_at,last_used_at FROM api_keys WHERE prefix=?`, secret[:displayedPrefixSize]).Scan(&k.ID, &k.Name, &k.Prefix, &salt, &want, &enabled, &scopes, &created, &last)
+	e := m.s.DB.QueryRowContext(ctx, `SELECT id,name,prefix,salt,hash,enabled,scopes,created_at,last_used_at FROM api_keys WHERE prefix=?`, secret[:displayedPrefixSize]).Scan(&k.ID, &k.Name, &k.Prefix, &snapshot.salt, &snapshot.hash, &enabled, &snapshot.scopes, &snapshot.created, &last)
 	if errors.Is(e, sql.ErrNoRows) {
-		return nil, ErrInvalidKey
+		return nil, verifiedKeySnapshot{}, ErrInvalidKey
 	}
 	if e != nil {
-		return nil, fmt.Errorf("lookup API key: %w", e)
+		return nil, verifiedKeySnapshot{}, fmt.Errorf("lookup API key: %w", e)
 	}
+	snapshot.name = k.Name
+	snapshot.prefix = k.Prefix
 	if !validKeyID(k.ID) {
-		return nil, fmt.Errorf("decode API key ID: %w", ErrInvalidKeyID)
+		return nil, verifiedKeySnapshot{}, fmt.Errorf("decode API key ID: %w", ErrInvalidKeyID)
 	}
 	if err := validateKeyName(k.Name); err != nil {
-		return nil, fmt.Errorf("decode API key %q name: %w", k.ID, err)
+		return nil, verifiedKeySnapshot{}, fmt.Errorf("decode API key %q name: %w", k.ID, err)
 	}
-	if !validDisplayedPrefix(k.Prefix) || len(salt) != saltSize || len(want) != hashSize {
-		return nil, fmt.Errorf("decode API key %q credential metadata: invalid persisted credential material", k.ID)
+	if !validDisplayedPrefix(k.Prefix) || len(snapshot.salt) != saltSize || len(snapshot.hash) != hashSize {
+		return nil, verifiedKeySnapshot{}, fmt.Errorf("decode API key %q credential metadata: invalid persisted credential material", k.ID)
 	}
 	k.Enabled, e = decodeEnabled(enabled)
 	if e != nil {
-		return nil, fmt.Errorf("decode API key %q: %w", k.ID, e)
+		return nil, verifiedKeySnapshot{}, fmt.Errorf("decode API key %q: %w", k.ID, e)
 	}
-	k.Scopes, e = decodeScopes(scopes)
+	k.Scopes, e = decodeScopes(snapshot.scopes)
 	if e != nil {
-		return nil, fmt.Errorf("decode API key %q: %w", k.ID, e)
+		return nil, verifiedKeySnapshot{}, fmt.Errorf("decode API key %q: %w", k.ID, e)
 	}
-	k.CreatedAt, e = time.Parse(time.RFC3339Nano, created)
+	k.CreatedAt, e = time.Parse(time.RFC3339Nano, snapshot.created)
 	if e != nil {
-		return nil, fmt.Errorf("parse API key %q creation time: %w", k.ID, e)
+		return nil, verifiedKeySnapshot{}, fmt.Errorf("parse API key %q creation time: %w", k.ID, e)
 	}
 	if last.Valid {
 		t, parseErr := time.Parse(time.RFC3339Nano, last.String)
 		if parseErr != nil {
-			return nil, fmt.Errorf("parse API key %q last-used time: %w", k.ID, parseErr)
+			return nil, verifiedKeySnapshot{}, fmt.Errorf("parse API key %q last-used time: %w", k.ID, parseErr)
 		}
 		k.LastUsedAt = &t
 	}
 	if e = validateKeyTimes(k.CreatedAt, k.LastUsedAt); e != nil {
-		return nil, fmt.Errorf("decode API key %q timestamps: %w", k.ID, e)
+		return nil, verifiedKeySnapshot{}, fmt.Errorf("decode API key %q timestamps: %w", k.ID, e)
 	}
 	// Decode every persisted authorization field before doing the KDF or
 	// publishing an authenticated principal. Corrupt SQLite rows must fail
 	// closed rather than partially authenticating with a valid scope fragment.
-	got, e := derive(secret, salt)
+	got, e := derive(secret, snapshot.salt)
 	if e != nil {
-		return nil, e
+		return nil, verifiedKeySnapshot{}, e
 	}
-	if subtle.ConstantTimeCompare(got, want) != 1 || !k.Enabled {
-		return nil, ErrInvalidKey
+	if subtle.ConstantTimeCompare(got, snapshot.hash) != 1 || !k.Enabled {
+		return nil, verifiedKeySnapshot{}, ErrInvalidKey
 	}
 	if need != "" && !has(k.Scopes, need) {
-		return nil, ErrInsufficientScope
+		return nil, verifiedKeySnapshot{}, ErrInsufficientScope
 	}
-	now := time.Now().UTC()
-	k.LastUsedAt = &now
-	if _, e = m.s.DB.ExecContext(ctx, `UPDATE api_keys SET last_used_at=? WHERE id=?`, now.Format(time.RFC3339Nano), k.ID); e != nil {
-		return nil, fmt.Errorf("update key usage: %w", e)
+	return &k, snapshot, nil
+}
+
+func (m *Manager) commitVerifiedUse(ctx context.Context, key *Key, snapshot verifiedKeySnapshot) error {
+	return m.commitVerifiedUseAt(ctx, key, snapshot, time.Now().UTC())
+}
+
+func (m *Manager) commitVerifiedUseAt(ctx context.Context, key *Key, snapshot verifiedKeySnapshot, usedAt time.Time) error {
+	stamp := usedAt.UTC().Format(time.RFC3339Nano)
+	var persisted string
+	err := m.s.DB.QueryRowContext(ctx, `UPDATE api_keys
+		SET last_used_at=CASE WHEN last_used_at IS NULL OR julianday(last_used_at) < julianday(?) THEN ? ELSE last_used_at END
+		WHERE id=? AND enabled=1 AND name=? AND prefix=? AND salt=? AND hash=? AND scopes=? AND created_at=?
+		RETURNING last_used_at`, stamp, stamp, key.ID, snapshot.name, snapshot.prefix, snapshot.salt, snapshot.hash, snapshot.scopes, snapshot.created).Scan(&persisted)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Disable and delete are revocation boundaries. If either wins while
+		// scrypt is running, a stale pre-revocation snapshot must not authenticate.
+		return ErrInvalidKey
 	}
-	return &k, nil
+	if err != nil {
+		return fmt.Errorf("update key usage: %w", err)
+	}
+	lastUsed, err := time.Parse(time.RFC3339Nano, persisted)
+	if err != nil {
+		return fmt.Errorf("parse committed API key %q last-used time: %w", key.ID, err)
+	}
+	key.LastUsedAt = &lastUsed
+	return nil
 }
 func validSecret(secret string) bool {
 	if len(secret) != len(secretPrefix)+secretRandomLength || !strings.HasPrefix(secret, secretPrefix) {
