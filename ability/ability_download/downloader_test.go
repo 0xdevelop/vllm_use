@@ -527,6 +527,30 @@ func TestDownloadDrainsAndBoundsOversizedOutputLine(t *testing.T) {
 	}
 }
 
+func TestDownloadBoundsPersistedHostError(t *testing.T) {
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	d := New("hf", &fakeRunner{cmd: &fakeCmd{wait: errors.New(strings.Repeat("错", maxDownloadErrorBytes))}})
+	if err = d.SetStore(st); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = d.Download(context.Background(), "bounded-error", "org/model", "/models/bounded-error", ""); err != nil {
+		t.Fatal(err)
+	}
+	waitForState(t, d, "bounded-error", Failed)
+	job, ok := d.Status("bounded-error")
+	if !ok || len(job.Error) > maxDownloadErrorBytes || !utf8.ValidString(job.Error) || !strings.HasSuffix(job.Error, downloadErrorTruncated) {
+		t.Fatalf("bounded error length=%d valid=%v suffix=%v", len(job.Error), utf8.ValidString(job.Error), strings.HasSuffix(job.Error, downloadErrorTruncated))
+	}
+	restored := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+	if err = restored.SetStore(st); err != nil {
+		t.Fatalf("restore bounded error: %v", err)
+	}
+}
+
 func logLengths(logs []string) []int {
 	lengths := make([]int, len(logs))
 	for i := range logs {
@@ -555,7 +579,7 @@ func TestConfiguredHFHomeOverridesInheritedValue(t *testing.T) {
 
 func TestRegisteredModelDownloadLifecycleAndRestore(t *testing.T) {
 	root := t.TempDir()
-	destination := filepath.Join(root, "model")
+	destination := filepath.Join(root, "22222222222222222222222222222222")
 	if err := os.Mkdir(destination, 0700); err != nil {
 		t.Fatal(err)
 	}
@@ -598,12 +622,15 @@ func TestRegisteredModelDownloadLifecycleAndRestore(t *testing.T) {
 	if modelID != "22222222222222222222222222222222" || revision != "main" {
 		t.Fatalf("persisted relationship %q %q", modelID, revision)
 	}
-	_, err = s.DB.Exec(`UPDATE downloads SET state='running',finished_at=NULL WHERE id='linked'; UPDATE models SET status='downloading' WHERE id='22222222222222222222222222222222'`)
+	_, err = s.DB.Exec(`UPDATE downloads SET state='running',finished_at=NULL WHERE id='linked'; UPDATE models SET status='downloading',local_path=NULL,size_bytes=0 WHERE id='22222222222222222222222222222222'`)
 	if err != nil {
 		t.Fatal(err)
 	}
 	restored := New("hf", &fakeRunner{cmd: &fakeCmd{}})
-	restored.SetStore(s)
+	restored.SetRoot(root)
+	if err = restored.SetStore(s); err != nil {
+		t.Fatalf("restore interrupted download: %v", err)
+	}
 	waitForState(t, restored, "linked", Canceled)
 	if err = s.DB.QueryRow(`SELECT status FROM models WHERE id='22222222222222222222222222222222'`).Scan(&status); err != nil || status != "canceled" {
 		t.Fatalf("restored model status %q err=%v", status, err)
@@ -874,7 +901,13 @@ func TestListOrderingAndPersistedRestore(t *testing.T) {
 	defer s.Close()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, row := range []struct{ id, state string }{{"z", "succeeded"}, {"a", "running"}} {
-		_, err = s.DB.Exec(`INSERT INTO downloads(id,repository,destination,state,progress,error,logs,created_at,updated_at) VALUES(?,?,?,?,0,'','[]',?,?)`, row.id, "org/model", "/models/"+row.id, row.state, now, now)
+		var started, finished any
+		if row.state == "running" {
+			started = now
+		} else {
+			finished = now
+		}
+		_, err = s.DB.Exec(`INSERT INTO downloads(id,repository,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES(?,?,?,?,0,'','[]',?,?,?,?)`, row.id, "org/model", "/models/"+row.id, row.state, started, finished, now, now)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -930,7 +963,7 @@ func TestSetStoreSurfacesInterruptedStatePersistenceFailure(t *testing.T) {
 	}
 	defer st.Close()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err = st.DB.Exec(`INSERT INTO downloads(id,repository,destination,state,progress,error,logs,created_at,updated_at) VALUES('interrupted','org/model','/models/interrupted','running',0,'','[]',?,?)`, now, now); err != nil {
+	if _, err = st.DB.Exec(`INSERT INTO downloads(id,repository,destination,state,progress,error,logs,started_at,created_at,updated_at) VALUES('interrupted','org/model','/models/interrupted','running',0,'','[]',?,?,?)`, now, now, now); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = st.DB.Exec(`CREATE TRIGGER reject_restore BEFORE UPDATE ON downloads WHEN NEW.id='interrupted' AND NEW.state='canceled' BEGIN SELECT RAISE(FAIL, 'injected restore failure'); END`); err != nil {
@@ -984,7 +1017,7 @@ func TestRestoreRejectsCorruptPersistedDownloadMetadata(t *testing.T) {
 			}
 			defer st.Close()
 			now := time.Now().UTC().Format(time.RFC3339Nano)
-			if _, insertErr := st.DB.Exec(`INSERT INTO downloads(id,repository,revision,destination,state,progress,error,logs,created_at,updated_at) VALUES('job','org/model','main','/models/job','succeeded',100,'','[]',?,?)`, now, now); insertErr != nil {
+			if _, insertErr := st.DB.Exec(`INSERT INTO downloads(id,repository,revision,destination,state,progress,error,logs,finished_at,created_at,updated_at) VALUES('job','org/model','main','/models/job','succeeded',100,'','[]',?,?,?)`, now, now, now); insertErr != nil {
 				t.Fatal(insertErr)
 			}
 			if test.column == "model_id" {
@@ -1004,6 +1037,76 @@ func TestRestoreRejectsCorruptPersistedDownloadMetadata(t *testing.T) {
 				t.Fatal("corrupt download was published in memory")
 			}
 		})
+	}
+}
+
+func TestRestoreRejectsImpossibleDownloadRelationships(t *testing.T) {
+	tests := []struct {
+		name     string
+		state    State
+		started  any
+		finished any
+		error    string
+	}{
+		{name: "pending with start time", state: Pending, started: "now"},
+		{name: "running without start time", state: Running},
+		{name: "running with finish time", state: Running, started: "now", finished: "now"},
+		{name: "succeeded without finish time", state: Succeeded},
+		{name: "succeeded with error", state: Succeeded, finished: "now", error: "unexpected"},
+		{name: "failed without error", state: Failed, finished: "now"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			started, finished := test.started, test.finished
+			if started == "now" {
+				started = now
+			}
+			if finished == "now" {
+				finished = now
+			}
+			if _, err = st.DB.Exec(`INSERT INTO downloads(id,repository,destination,state,progress,error,logs,started_at,finished_at,created_at,updated_at) VALUES('job','org/model','/models/job',?,0,?,'[]',?,?,?,?)`, test.state, test.error, started, finished, now, now); err != nil {
+				t.Fatal(err)
+			}
+			d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+			if err = d.SetStore(st); err == nil || !strings.Contains(err.Error(), "persisted download") {
+				t.Fatalf("restore error = %v", err)
+			}
+			if len(d.List()) != 0 {
+				t.Fatal("impossible download was published in memory")
+			}
+		})
+	}
+}
+
+func TestRestoreRejectsLinkedDownloadOutsideRegisteredAuthority(t *testing.T) {
+	root := t.TempDir()
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	modelID := strings.Repeat("a", 32)
+	if _, err = st.DB.Exec(`INSERT INTO models(id,kind,source,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES(?,'huggingface','org/model',?,'model','org/model','main',0,'downloading',?)`, modelID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.DB.Exec(`INSERT INTO downloads(id,model_id,repository,revision,destination,state,progress,error,logs,started_at,created_at,updated_at) VALUES('job',?,'org/other','main',?,'running',0,'','[]',?,?,?)`, modelID, filepath.Join(root, modelID), now, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+	d.SetRoot(root)
+	if err = d.SetStore(st); err == nil || !strings.Contains(err.Error(), "does not match registered model") {
+		t.Fatalf("restore error = %v", err)
+	}
+	if len(d.List()) != 0 {
+		t.Fatal("mismatched linked download was published in memory")
 	}
 }
 

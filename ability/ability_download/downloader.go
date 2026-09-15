@@ -56,6 +56,9 @@ const (
 
 	maxDownloadLogLineBytes    = 64 << 10
 	downloadLogTruncatedSuffix = "… [truncated]"
+	maxDownloadPathBytes       = 4096
+	maxDownloadErrorBytes      = 64 << 10
+	downloadErrorTruncated     = "... [truncated]"
 )
 
 type Job struct {
@@ -488,6 +491,7 @@ func (d *Downloader) finish(j *Job, s State, e error) error {
 		if j.secret != "" {
 			j.Error = strings.ReplaceAll(j.Error, j.secret, "[REDACTED]")
 		}
+		j.Error = boundDownloadError(j.Error)
 	}
 	j.cancel = nil
 	j.secret = ""
@@ -510,6 +514,18 @@ func setEnvironment(env []string, key, value string) []string {
 		}
 	}
 	return append(out, prefix+value)
+}
+
+func boundDownloadError(value string) string {
+	value = strings.ToValidUTF8(value, "�")
+	if len(value) <= maxDownloadErrorBytes {
+		return value
+	}
+	value = value[:maxDownloadErrorBytes-len(downloadErrorTruncated)]
+	for len(value) > 0 && !utf8.ValidString(value) {
+		value = value[:len(value)-1]
+	}
+	return value + downloadErrorTruncated
 }
 
 func validateDownloadDestination(root, destination string) error {
@@ -678,6 +694,7 @@ func (d *Downloader) restore() error {
 	type restoredJob struct {
 		job         Job
 		interrupted bool
+		storedState State
 	}
 	var restored []restoredJob
 	for rows.Next() {
@@ -689,10 +706,6 @@ func (d *Downloader) restore() error {
 			return fmt.Errorf("scan persisted download: %w", err)
 		}
 		j.State = State(state)
-		if err = d.validateRestoredJob(&j, created, updated); err != nil {
-			_ = rows.Close()
-			return fmt.Errorf("decode persisted download %q: %w", j.ID, err)
-		}
 		interrupted := j.State == Running || j.State == Pending
 		if err = json.Unmarshal([]byte(logs), &j.Logs); err != nil {
 			_ = rows.Close()
@@ -724,12 +737,16 @@ func (d *Downloader) restore() error {
 			}
 			j.FinishedAt = &v
 		}
+		if err = d.validateRestoredJob(&j, created, updated); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("decode persisted download %q: %w", j.ID, err)
+		}
 		if interrupted {
 			j.State, j.Error = Canceled, "interrupted by service restart"
 			now := time.Now().UTC()
 			j.FinishedAt = &now
 		}
-		restored = append(restored, restoredJob{job: j, interrupted: interrupted})
+		restored = append(restored, restoredJob{job: j, interrupted: interrupted, storedState: State(state)})
 	}
 	if err = rows.Err(); err != nil {
 		_ = rows.Close()
@@ -740,6 +757,13 @@ func (d *Downloader) restore() error {
 	// still owned by its own read cursor.
 	if err = rows.Close(); err != nil {
 		return fmt.Errorf("close persisted download cursor: %w", err)
+	}
+	for i := range restored {
+		persisted := restored[i].job
+		persisted.State = restored[i].storedState
+		if err = d.validateLinkedRestoredJob(&persisted); err != nil {
+			return fmt.Errorf("decode persisted download %q: %w", restored[i].job.ID, err)
+		}
 	}
 
 	d.mu.Lock()
@@ -781,14 +805,97 @@ func (d *Downloader) validateRestoredJob(j *Job, created, updated string) error 
 	if math.IsNaN(j.Progress) || math.IsInf(j.Progress, 0) || j.Progress < 0 || j.Progress > 100 {
 		return errors.New("invalid progress")
 	}
-	if _, err = time.Parse(time.RFC3339Nano, created); err != nil {
+	createdAt, err := time.Parse(time.RFC3339Nano, created)
+	if err != nil {
 		return fmt.Errorf("parse creation time: %w", err)
 	}
-	if _, err = time.Parse(time.RFC3339Nano, updated); err != nil {
+	updatedAt, err := time.Parse(time.RFC3339Nano, updated)
+	if err != nil {
 		return fmt.Errorf("parse update time: %w", err)
 	}
-	if !filepath.IsAbs(j.Destination) {
-		return errors.New("destination must be absolute")
+	if updatedAt.Before(createdAt) {
+		return errors.New("update time precedes creation time")
+	}
+	if len(j.Destination) == 0 || len(j.Destination) > maxDownloadPathBytes || !utf8.ValidString(j.Destination) || !filepath.IsAbs(j.Destination) || filepath.Clean(j.Destination) != j.Destination {
+		return errors.New("destination must be canonical absolute UTF-8 within 4096 bytes")
+	}
+	if len(j.Error) > maxDownloadErrorBytes || !utf8.ValidString(j.Error) {
+		return errors.New("error must be valid UTF-8 within 64 KiB")
+	}
+	if j.FinishedAt != nil {
+		minimum := createdAt
+		if j.StartedAt != nil {
+			minimum = *j.StartedAt
+		}
+		if j.FinishedAt.Before(minimum) {
+			return errors.New("finish time precedes download start")
+		}
+		if updatedAt.Before(*j.FinishedAt) {
+			return errors.New("update time precedes finish time")
+		}
+	}
+	switch j.State {
+	case Pending:
+		if j.StartedAt != nil || j.FinishedAt != nil || j.Error != "" {
+			return errors.New("pending download has terminal or start metadata")
+		}
+	case Running:
+		if j.StartedAt == nil || j.FinishedAt != nil || j.Error != "" {
+			return errors.New("running download has inconsistent lifecycle metadata")
+		}
+	case Succeeded:
+		if j.FinishedAt == nil || j.Error != "" {
+			return errors.New("succeeded download has inconsistent terminal metadata")
+		}
+	case Failed, Canceled:
+		if j.FinishedAt == nil || j.Error == "" {
+			return errors.New("failed or canceled download has inconsistent terminal metadata")
+		}
+	}
+	return nil
+}
+
+func (d *Downloader) validateLinkedRestoredJob(j *Job) error {
+	if j.ModelID == "" {
+		return nil
+	}
+	d.mu.RLock()
+	store, root := d.store, d.root
+	d.mu.RUnlock()
+	if store == nil {
+		return errors.New("model integration unavailable")
+	}
+	var kind, repository, revision, status, localPath string
+	err := store.DB.QueryRow(`SELECT kind,repository,revision,status,COALESCE(local_path,'') FROM models WHERE id=?`, j.ModelID).Scan(&kind, &repository, &revision, &status, &localPath)
+	if errors.Is(err, sql.ErrNoRows) {
+		return errors.New("linked registered model not found")
+	}
+	if err != nil {
+		return fmt.Errorf("read linked registered model: %w", err)
+	}
+	if kind != "huggingface" {
+		return errors.New("linked download model is not a Hugging Face model")
+	}
+	if repository != j.Repo || revision != j.Revision {
+		if j.State == Pending || j.State == Running {
+			return errors.New("download does not match registered model")
+		}
+		return nil
+	}
+	if j.State != Pending && j.State != Running {
+		// Terminal jobs are immutable history. The registered model may have
+		// become ready through a later job, or its source may be updated by a
+		// future migration; retry re-resolves all authoritative fields.
+		return nil
+	}
+	if root != "" && j.Destination != filepath.Join(filepath.Clean(root), j.ModelID) {
+		return errors.New("download destination does not match registered model")
+	}
+	if status != "downloading" {
+		return errors.New("download state does not match registered model")
+	}
+	if localPath != "" {
+		return errors.New("incomplete download has a registered local path")
 	}
 	return nil
 }

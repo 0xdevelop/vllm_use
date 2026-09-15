@@ -122,11 +122,11 @@ func Run(ctx context.Context, args []string, stderr io.Writer) int {
 		return 1
 	}
 	downloads := ability_download.NewWithOptions(c.HFCLI, nil, c.MaxDownloadWorkers, 1000)
+	downloads.SetRoot(c.ModelsDir)
 	if err = downloads.SetStore(st); err != nil {
 		slog.Error("restore interrupted model downloads", "error", err)
 		return 1
 	}
-	downloads.SetRoot(c.ModelsDir)
 	downloads.SetHFHome(c.HFHome)
 	switcher.SetModelResolver(func(ctx context.Context, id string) (ability_runtime.ModelTarget, error) {
 		model, resolveErr := registry.ResolveRuntimeModel(ctx, id)
