@@ -258,6 +258,10 @@ func (s *Server) api(w http.ResponseWriter, r *http.Request) {
 func (s *Server) downloadAPI(w http.ResponseWriter, r *http.Request) {
 	tail := strings.TrimPrefix(r.URL.Path, "/api/downloads/")
 	parts := strings.Split(tail, "/")
+	if len(parts) > 2 || parts[0] == "" || (len(parts) == 2 && parts[1] == "") {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
 	id := parts[0]
 	action := ""
 	if len(parts) > 1 {

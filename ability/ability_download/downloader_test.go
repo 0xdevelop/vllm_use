@@ -211,6 +211,44 @@ func TestDownloadDestinationStaysInsideRoot(t *testing.T) {
 	}
 }
 
+func TestDownloadRejectsNonPortableJobIDsBeforeHostExecution(t *testing.T) {
+	for _, id := range []string{
+		" leading",
+		"trailing ",
+		"contains space",
+		"contains:colon",
+		"contains,comma",
+		"控制",
+		strings.Repeat("a", 129),
+	} {
+		runner := &fakeRunner{cmd: &fakeCmd{}}
+		downloader := New("hf", runner)
+		if _, err := downloader.Download(context.Background(), id, "org/model", "/models/model", ""); err == nil || !strings.Contains(err.Error(), "invalid download id") {
+			t.Fatalf("job id %q result = %v", id, err)
+		}
+		if runner.calls != 0 || len(downloader.List()) != 0 {
+			t.Fatalf("job id %q reached host execution: calls=%d jobs=%d", id, runner.calls, len(downloader.List()))
+		}
+	}
+
+	for _, id := range []string{"a", "job-1", "release_2026.09", strings.Repeat("z", 128)} {
+		if err := validateDownloadID(id); err != nil {
+			t.Fatalf("portable job id %q rejected: %v", id, err)
+		}
+	}
+}
+
+func TestCancelRejectsTerminalAndMalformedJobIDs(t *testing.T) {
+	d := New("hf", &fakeRunner{cmd: &fakeCmd{}})
+	d.jobs["finished"] = &Job{ID: "finished", State: Succeeded}
+	if err := d.Cancel("finished"); err == nil || !strings.Contains(err.Error(), "not active") {
+		t.Fatalf("terminal cancellation result = %v", err)
+	}
+	if err := d.Cancel("bad/id"); err == nil || !strings.Contains(err.Error(), "invalid download id") {
+		t.Fatalf("malformed cancellation result = %v", err)
+	}
+}
+
 func TestDownloadRejectsInvalidHuggingFaceCoordinatesBeforeHostExecution(t *testing.T) {
 	for _, request := range []Request{
 		{ID: "unicode-repository", Repository: "组织/model", Destination: "/models/model"},
@@ -988,6 +1026,8 @@ func TestRestoreRejectsCorruptPersistedDownloadMetadata(t *testing.T) {
 		value  any
 	}{
 		{name: "id", column: "id", value: "../job"},
+		{name: "id whitespace", column: "id", value: "job with space"},
+		{name: "id unicode", column: "id", value: "任务"},
 		{name: "model id", column: "model_id", value: "../model"},
 		{name: "state", column: "state", value: "unknown"},
 		{name: "negative progress", column: "progress", value: -1},

@@ -37,7 +37,7 @@ func LoadAPIMethods() {
 		}
 		return downloader().DownloadModel(ctx, in.ID, in.ModelID, in.Token)
 	})
-	add(MethodStatus, "读取下载状态", map[string]interface{}{"id": str()}, []string{"id"}, func(_ context.Context, input interface{}) (interface{}, error) {
+	add(MethodStatus, "读取下载状态", map[string]interface{}{"id": jobIDSchema()}, []string{"id"}, func(_ context.Context, input interface{}) (interface{}, error) {
 		id, err := inputID(input)
 		if err != nil {
 			return nil, err
@@ -48,14 +48,14 @@ func LoadAPIMethods() {
 		}
 		return job, nil
 	})
-	add(MethodLogs, "读取下载日志", map[string]interface{}{"id": str()}, []string{"id"}, func(_ context.Context, input interface{}) (interface{}, error) {
+	add(MethodLogs, "读取下载日志", map[string]interface{}{"id": jobIDSchema()}, []string{"id"}, func(_ context.Context, input interface{}) (interface{}, error) {
 		id, err := inputID(input)
 		if err != nil {
 			return nil, err
 		}
 		return downloader().Logs(id)
 	})
-	add(MethodCancel, "取消下载", map[string]interface{}{"id": str()}, []string{"id"}, func(_ context.Context, input interface{}) (interface{}, error) {
+	add(MethodCancel, "取消下载", map[string]interface{}{"id": jobIDSchema()}, []string{"id"}, func(_ context.Context, input interface{}) (interface{}, error) {
 		id, err := inputID(input)
 		if err != nil {
 			return nil, err
@@ -63,7 +63,7 @@ func LoadAPIMethods() {
 		err = downloader().Cancel(id)
 		return map[string]bool{"canceled": err == nil}, err
 	})
-	add(MethodRetry, "重试下载", map[string]interface{}{"id": str(), "token": boundedString(4096)}, []string{"id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
+	add(MethodRetry, "重试下载", map[string]interface{}{"id": jobIDSchema(), "token": boundedString(4096)}, []string{"id"}, func(ctx context.Context, input interface{}) (interface{}, error) {
 		var in struct {
 			ID    string `json:"id"`
 			Token string `json:"token"`
@@ -77,7 +77,7 @@ func LoadAPIMethods() {
 
 func requestProperties() map[string]interface{} {
 	return map[string]interface{}{
-		"id":       str(),
+		"id":       jobIDSchema(),
 		"model_id": modelIDSchema(),
 		"token":    boundedString(4096),
 	}
@@ -87,6 +87,9 @@ func inputID(input interface{}) (string, error) {
 		ID string `json:"id"`
 	}
 	err := api_supported_methods.DecodeArguments(input, &in)
+	if err == nil {
+		err = validateDownloadID(in.ID)
+	}
 	return in.ID, err
 }
 func downloader() *Downloader {
@@ -98,7 +101,9 @@ func downloader() *Downloader {
 func add(name, description string, properties map[string]interface{}, required []string, execute func(context.Context, interface{}) (interface{}, error)) {
 	api_supported_methods.AddMethod(&api_supported_methods.SupportedMethod{Name: name, Description: description, Scope: "mcp.models", InputSchema: api_supported_methods.ObjectSchema(properties, required), Execute: execute})
 }
-func str() map[string]interface{} { return map[string]interface{}{"type": "string"} }
+func jobIDSchema() map[string]interface{} {
+	return map[string]interface{}{"type": "string", "minLength": 1, "maxLength": maxDownloadIDBytes, "pattern": downloadIDPattern}
+}
 func modelIDSchema() map[string]interface{} {
 	return map[string]interface{}{"type": "string", "minLength": modelid.Length, "maxLength": modelid.Length, "pattern": modelid.Pattern}
 }

@@ -56,6 +56,8 @@ const (
 
 	maxDownloadLogLineBytes    = 64 << 10
 	downloadLogTruncatedSuffix = "… [truncated]"
+	maxDownloadIDBytes         = 128
+	downloadIDPattern          = `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`
 	maxDownloadPathBytes       = 4096
 	maxDownloadErrorBytes      = 64 << 10
 	downloadErrorTruncated     = "... [truncated]"
@@ -185,9 +187,8 @@ func (d *Downloader) DownloadRequest(parent context.Context, request Request) (*
 
 func (d *Downloader) downloadRequest(parent context.Context, request Request, retry bool) (*Job, error) {
 	id, repo, dest, token := request.ID, request.Repository, request.Destination, request.Token
-	id = strings.TrimSpace(id)
-	if id == "" || len(id) > 128 || strings.ContainsAny(id, "\\/\x00\n\r	") {
-		return nil, errors.New("invalid download id")
+	if err := validateDownloadID(id); err != nil {
+		return nil, err
 	}
 	if len(token) > 4096 || strings.ContainsAny(token, "\x00\n\r") {
 		return nil, errors.New("invalid download token")
@@ -417,6 +418,14 @@ func (d *Downloader) jobCopy(j *Job) *Job {
 }
 
 var pct = regexp.MustCompile(`([0-9]{1,3}(?:\.[0-9]+)?)%`)
+var downloadID = regexp.MustCompile(downloadIDPattern)
+
+func validateDownloadID(id string) error {
+	if len(id) == 0 || len(id) > maxDownloadIDBytes || !downloadID.MatchString(id) {
+		return errors.New("invalid download id: use 1-128 ASCII letters, digits, dots, underscores, or hyphens, starting with a letter or digit")
+	}
+	return nil
+}
 
 func (d *Downloader) consume(j *Job, r io.Reader, secret string) error {
 	reader := bufio.NewReaderSize(r, 64<<10)
@@ -672,15 +681,19 @@ func directorySize(root string) (int64, error) {
 	return size, err
 }
 func (d *Downloader) Cancel(id string) error {
+	if err := validateDownloadID(id); err != nil {
+		return err
+	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	j := d.jobs[id]
 	if j == nil {
 		return errors.New("job not found")
 	}
-	if j.cancel != nil {
-		j.cancel()
+	if (j.State != Running && j.State != Pending) || j.cancel == nil {
+		return errors.New("download is not active")
 	}
+	j.cancel()
 	return nil
 }
 func (d *Downloader) List() []Job {
@@ -800,8 +813,8 @@ func (d *Downloader) restore() error {
 }
 
 func (d *Downloader) validateRestoredJob(j *Job, created, updated string) error {
-	if j.ID == "" || len(j.ID) > 128 || strings.TrimSpace(j.ID) != j.ID || strings.ContainsAny(j.ID, "\\/\x00\n\r	") {
-		return errors.New("invalid id")
+	if err := validateDownloadID(j.ID); err != nil {
+		return err
 	}
 	if j.ModelID != "" && !modelid.Valid(j.ModelID) {
 		return modelid.ErrInvalid
@@ -936,6 +949,9 @@ func (d *Downloader) Status(id string) (Job, bool) {
 	return cp, true
 }
 func (d *Downloader) Retry(ctx context.Context, id, token string) (*Job, error) {
+	if err := validateDownloadID(id); err != nil {
+		return nil, err
+	}
 	j, ok := d.Status(id)
 	if !ok {
 		return nil, errors.New("job not found")

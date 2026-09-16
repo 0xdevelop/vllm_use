@@ -132,6 +132,26 @@ func TestAdminAuthErrorsAndWebNamespace(t *testing.T) {
 	}
 }
 
+func TestDownloadRoutesRejectAmbiguousTailsAndJobIDs(t *testing.T) {
+	s, _ := testServer(t)
+	h := s.Handler()
+	for _, path := range []string{
+		"/api/downloads/job/logs/extra",
+		"/api/downloads/job/cancel/extra",
+		"/api/downloads/job/retry/extra",
+	} {
+		w := request(t, h, http.MethodGet, path, "admin", "")
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("ambiguous route %q accepted: %d %s", path, w.Code, w.Body.String())
+		}
+	}
+
+	w := request(t, h, http.MethodGet, "/api/downloads/job%20with%20space", "admin", "")
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "invalid download id") {
+		t.Fatalf("non-portable download id accepted: %d %s", w.Code, w.Body.String())
+	}
+}
+
 func TestProtectedManagementResponsesAreNotCacheable(t *testing.T) {
 	s, _ := testServer(t)
 	s.MCP = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
