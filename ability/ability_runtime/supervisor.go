@@ -116,36 +116,35 @@ func (s *Supervisor) start(ctx context.Context, o Options) error {
 		}
 		cmd.Env = setEnv(cmd.Env, "CUDA_VISIBLE_DEVICES", strings.Join(devices, ","))
 	}
-	out, e := cmd.StdoutPipe()
+	out, writer, e := os.Pipe()
 	if e != nil {
 		s.mu.Unlock()
 		cancel()
 		return e
 	}
-	errout, e := cmd.StderrPipe()
-	if e != nil {
-		s.mu.Unlock()
-		cancel()
-		return e
-	}
+	// Give stdout and stderr the same child pipe. Besides reducing reader
+	// coordination, this preserves the kernel write order across both streams so
+	// a final stderr diagnostic cannot be evicted by older stdout that a separate
+	// goroutine happened to drain later.
+	cmd.Stdout = writer
+	cmd.Stderr = writer
 	if e = cmd.Start(); e != nil {
+		_ = out.Close()
+		_ = writer.Close()
 		s.mu.Unlock()
 		cancel()
 		return e
 	}
+	_ = writer.Close()
 	now := time.Now().UTC()
 	s.cmd = cmd
 	s.cancel = cancel
 	s.done = make(chan struct{})
 	s.state = State{Status: Starting, PID: cmd.Process.Pid, StartedAt: &now}
 	s.mu.Unlock()
-	logsDone := make(chan struct{}, 2)
+	logsDone := make(chan struct{}, 1)
 	go func() {
 		s.logs(cmd, out)
-		logsDone <- struct{}{}
-	}()
-	go func() {
-		s.logs(cmd, errout)
 		logsDone <- struct{}{}
 	}()
 	go s.wait(cmd, logsDone)
@@ -274,12 +273,11 @@ func (s *Supervisor) wait(cmd *exec.Cmd, logsDone <-chan struct{}) {
 	// The leader may exit while descendants keep its pipes and process group alive.
 	// Always tear down that original group before publishing completion.
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	// cmd.Wait closes the supervisor's pipe descriptors, and killing the original
-	// process group closes any copies inherited by descendants. Do not publish a
-	// terminal runtime state until both readers have consumed the bytes already
-	// available on those pipes; otherwise clients can observe Failed/Stopped and
-	// permanently miss the final diagnostic lines from the process.
-	<-logsDone
+	// cmd.Wait observes leader exit; killing the original process group closes
+	// descriptor copies inherited by descendants. Do not publish a terminal
+	// runtime state until the merged reader has consumed all bytes already
+	// available on the pipe; otherwise clients can observe Failed/Stopped and
+	// permanently miss final diagnostics.
 	<-logsDone
 	s.mu.Lock()
 	defer s.mu.Unlock()

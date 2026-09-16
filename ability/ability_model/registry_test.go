@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/0xdevelop/vllm-use/api/api_executer"
+	"github.com/0xdevelop/vllm-use/api/api_supported_methods"
 	"github.com/0xdevelop/vllm-use/db/sqlite"
 )
 
@@ -64,7 +66,7 @@ func TestResolveRuntimeModelRevalidatesManagedDirectory(t *testing.T) {
 	}
 }
 
-func TestRegistryBoundariesAndCRUD(t *testing.T) {
+func TestRegistryIgnoresLegacyRuntimePresetWhenDeletingStoppedModel(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "models")
 	if e := os.Mkdir(root, 0700); e != nil {
@@ -100,20 +102,57 @@ func TestRegistryBoundariesAndCRUD(t *testing.T) {
 	if _, e = s.DB.Exec(`INSERT INTO runtime_configs(id,name,model_id,options_json,active,created_at,updated_at) VALUES('active','active',?,'{}',1,?,?)`, m.ID, now, now); e != nil {
 		t.Fatal(e)
 	}
-	if e = r.Delete(context.Background(), m.ID, true); e == nil {
-		t.Fatal("deleted active model")
-	}
-	if _, e = os.Stat(local); e != nil {
-		t.Fatalf("active model files moved: %v", e)
-	}
-	if _, e = s.DB.Exec(`DELETE FROM runtime_configs WHERE id='active'`); e != nil {
-		t.Fatal(e)
-	}
+	// runtime_configs is retained for database compatibility but is not wired to
+	// the live single-process supervisor. A stale legacy "active" preset must not
+	// permanently pin stopped model files; the Ability-level deletion guard owns
+	// serialization against the actual runtime process.
 	if e = r.Delete(context.Background(), m.ID, true); e != nil {
 		t.Fatal(e)
 	}
 	if _, e = os.Stat(local); !errors.Is(e, os.ErrNotExist) {
 		t.Fatalf("local still exists: %v", e)
+	}
+}
+
+func TestDeleteAbilityDefersToLiveRuntimeGuard(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "models")
+	modelPath := filepath.Join(root, "running")
+	if err := os.MkdirAll(modelPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	registry := New(store, root)
+	model, err := registry.RegisterLocal(ctx, "running", modelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	Setup(registry)
+	SetupDeletionGuard(func(id, localPath string, remove func() error) error {
+		if id != model.ID || localPath != modelPath {
+			t.Fatalf("guard target = (%q, %q), want (%q, %q)", id, localPath, model.ID, modelPath)
+		}
+		return errors.New("refusing to delete the running model")
+	})
+	t.Cleanup(func() { SetupDeletionGuard(nil) })
+	api_supported_methods.SupportedMethodsSetup()
+	LoadAPIMethods()
+	LoadManagementMethods()
+
+	_, err = api_executer.ExecuteAbility(api_executer.WithAdmin(ctx), MethodDelete, map[string]interface{}{"id": model.ID, "files": true})
+	if err == nil || !strings.Contains(err.Error(), "running model") {
+		t.Fatalf("delete error = %v, want live runtime guard rejection", err)
+	}
+	if _, err = os.Stat(modelPath); err != nil {
+		t.Fatalf("guarded model files changed: %v", err)
+	}
+	if _, err = registry.Get(ctx, model.ID); err != nil {
+		t.Fatalf("guarded model registration changed: %v", err)
 	}
 }
 

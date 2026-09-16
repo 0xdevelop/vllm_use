@@ -546,15 +546,12 @@ func (r *Registry) Delete(ctx context.Context, id string, files bool) error {
 		return fmt.Errorf("begin delete: %w", err)
 	}
 	defer tx.Rollback()
-	var active, downloading int
-	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM runtime_configs WHERE model_id=? AND active=1`, id).Scan(&active); err != nil {
-		return fmt.Errorf("check active runtime: %w", err)
-	}
+	var downloading int
 	if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM downloads WHERE (model_id=? OR destination=?) AND state IN ('pending','running')`, id, m.LocalPath).Scan(&downloading); err != nil {
 		return fmt.Errorf("check downloads: %w", err)
 	}
-	if active > 0 || downloading > 0 {
-		return errors.New("refusing to delete a running or downloading model")
+	if downloading > 0 {
+		return errors.New("refusing to delete a downloading model")
 	}
 	var stageDir, staged, original, qroot string
 	restoreStage := func(cause error) error {
