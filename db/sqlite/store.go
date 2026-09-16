@@ -100,6 +100,11 @@ var migrations = []string{
 	// Normalize those legacy identities once so all persisted rows satisfy the
 	// current server-generated 128-bit audit ID contract.
 	`UPDATE api_requests SET id=lower(hex(randomblob(16))) WHERE length(id)<>32 OR id GLOB '*[^0-9a-f]*';`,
+	// A managed directory has one authoritative model identity. Without this
+	// boundary, registering the same local path twice lets deleting either row
+	// remove files still referenced by the other row. NULL remains repeatable for
+	// Hugging Face models that have not completed a download.
+	`CREATE UNIQUE INDEX models_local_path_unique_idx ON models(local_path) WHERE local_path IS NOT NULL;`,
 }
 
 func (s *Store) migrate(ctx context.Context) error {

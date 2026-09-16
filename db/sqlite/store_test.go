@@ -213,6 +213,54 @@ func TestOpenUpgradesExistingSchema(t *testing.T) {
 	}
 }
 
+func TestOpenRejectsDuplicatePersistedModelPathsDuringUpgrade(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "duplicate-model-paths.db")
+	db, err := sql.Open("sqlite", "file:"+p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < len(migrations)-1; i++ {
+		if _, err = db.Exec(migrations[i]); err != nil {
+			t.Fatal(err)
+		}
+		if _, err = db.Exec(`INSERT INTO schema_migrations VALUES(?,?)`, i+1, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	const duplicatePath = "/managed/models/shared"
+	if _, err = db.Exec(`INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES
+		('11111111111111111111111111111111','local',?,?,?,'first','','',1,'ready',?),
+		('22222222222222222222222222222222','local',?,?,?,'second','','',1,'ready',?)`, duplicatePath, duplicatePath, now, now, duplicatePath, duplicatePath, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if store, openErr := Open(p); openErr == nil {
+		_ = store.Close()
+		t.Fatal("duplicate persisted model paths were accepted during upgrade")
+	}
+	db, err = sql.Open("sqlite", "file:"+p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var modelCount, version int
+	if err = db.QueryRow(`SELECT COUNT(*) FROM models WHERE local_path=?`, duplicatePath).Scan(&modelCount); err != nil {
+		t.Fatal(err)
+	}
+	if err = db.QueryRow(`SELECT MAX(version) FROM schema_migrations`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if modelCount != 2 || version != len(migrations)-1 {
+		t.Fatalf("failed migration changed durable data: models=%d version=%d", modelCount, version)
+	}
+}
+
 func TestOpenPurgesUnicodeDisguisedSensitiveSettingsFromCurrentSchema(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "current.db")
 	s, err := Open(p)

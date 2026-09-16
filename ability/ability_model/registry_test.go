@@ -190,6 +190,38 @@ func TestRegisterLocalRejectsUnsafeDurableMetadataAndModelsRoot(t *testing.T) {
 	}
 }
 
+func TestRegisterLocalRejectsDuplicateManagedPath(t *testing.T) {
+	ctx := context.Background()
+	root := filepath.Join(t.TempDir(), "models")
+	modelPath := filepath.Join(root, "shared-model")
+	if err := os.MkdirAll(modelPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(modelPath, "weights.bin"), []byte("weights"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := sqlite.Open(filepath.Join(t.TempDir(), "models.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	registry := New(store, root)
+	first, err := registry.RegisterLocal(ctx, "first", modelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = registry.RegisterLocal(ctx, "duplicate", modelPath); err == nil || !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("duplicate managed path result = %v, want already registered", err)
+	}
+	models, err := registry.List(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(models) != 1 || models[0].ID != first.ID {
+		t.Fatalf("duplicate registration changed registry: %#v", models)
+	}
+}
+
 func TestRegisterHuggingFaceRejectsInputsTheDownloaderCannotUse(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "models")
 	if err := os.Mkdir(root, 0o700); err != nil {

@@ -145,6 +145,18 @@ func validateModelID(id string) error {
 }
 
 func (r *Registry) add(ctx context.Context, m Model) (Model, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if m.LocalPath != "" {
+		var existingID string
+		err := r.store.DB.QueryRowContext(ctx, `SELECT id FROM models WHERE local_path=? LIMIT 1`, m.LocalPath).Scan(&existingID)
+		if err == nil {
+			return Model{}, errors.New("model path is already registered")
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Model{}, fmt.Errorf("check model path registration: %w", err)
+		}
+	}
 	var err error
 	m.ID, err = newID()
 	if err != nil {
@@ -154,6 +166,15 @@ func (r *Registry) add(ctx context.Context, m Model) (Model, error) {
 	m.UpdatedAt = m.CreatedAt
 	_, err = r.store.DB.ExecContext(ctx, `INSERT INTO models(id,kind,source,local_path,created_at,name,repository,revision,size_bytes,status,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`, m.ID, m.Kind, m.Source, nullString(m.LocalPath), stamp(m.CreatedAt), m.Name, m.Repository, m.Revision, m.SizeBytes, m.Status, stamp(m.UpdatedAt))
 	if err != nil {
+		// The unique index is the cross-process/source-of-truth guard. Translate
+		// its local-path collision into a stable product error after the fast
+		// preflight above loses a race with another registry instance.
+		if m.LocalPath != "" {
+			var count int
+			if checkErr := r.store.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM models WHERE local_path=?`, m.LocalPath).Scan(&count); checkErr == nil && count > 0 {
+				return Model{}, errors.New("model path is already registered")
+			}
+		}
 		return Model{}, fmt.Errorf("register model: %w", err)
 	}
 	return m, nil
