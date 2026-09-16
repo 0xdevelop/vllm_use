@@ -139,9 +139,16 @@ func (s *Supervisor) start(ctx context.Context, o Options) error {
 	s.done = make(chan struct{})
 	s.state = State{Status: Starting, PID: cmd.Process.Pid, StartedAt: &now}
 	s.mu.Unlock()
-	go s.logs(cmd, out)
-	go s.logs(cmd, errout)
-	go s.wait(cmd)
+	logsDone := make(chan struct{}, 2)
+	go func() {
+		s.logs(cmd, out)
+		logsDone <- struct{}{}
+	}()
+	go func() {
+		s.logs(cmd, errout)
+		logsDone <- struct{}{}
+	}()
+	go s.wait(cmd, logsDone)
 	host := o.Host
 	if host == "" {
 		host = "127.0.0.1"
@@ -262,11 +269,18 @@ func (s *Supervisor) appendLog(cmd *exec.Cmd, line string, truncated bool) {
 		s.state.Logs = append([]string(nil), s.state.Logs[len(s.state.Logs)-1000:]...)
 	}
 }
-func (s *Supervisor) wait(cmd *exec.Cmd) {
+func (s *Supervisor) wait(cmd *exec.Cmd, logsDone <-chan struct{}) {
 	e := cmd.Wait()
 	// The leader may exit while descendants keep its pipes and process group alive.
 	// Always tear down that original group before publishing completion.
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	// cmd.Wait closes the supervisor's pipe descriptors, and killing the original
+	// process group closes any copies inherited by descendants. Do not publish a
+	// terminal runtime state until both readers have consumed the bytes already
+	// available on those pipes; otherwise clients can observe Failed/Stopped and
+	// permanently miss the final diagnostic lines from the process.
+	<-logsDone
+	<-logsDone
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.cmd != cmd {

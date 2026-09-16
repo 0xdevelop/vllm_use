@@ -115,6 +115,27 @@ func TestSupervisorAbnormalExit(t *testing.T) {
 	}
 }
 
+func TestSupervisorPublishesExitAfterDrainingFinalLogs(t *testing.T) {
+	s := NewSupervisor(script(t, `i=0; while [ "$i" -lt 1500 ]; do echo "line-$i"; i=$((i+1)); done; echo final-marker >&2; exit 7`), time.Second, time.Second)
+	o := readyOptions(t, s)
+	_ = s.Start(context.Background(), o)
+	eventually(t, func() bool { return s.State().Status == Failed })
+
+	logs := s.State().Logs
+	if !containsLog(logs, "final-marker") {
+		t.Fatalf("runtime exit published before final logs were drained: count=%d", len(logs))
+	}
+}
+
+func containsLog(logs []string, target string) bool {
+	for _, line := range logs {
+		if line == target {
+			return true
+		}
+	}
+	return false
+}
+
 func TestReadinessTimeoutStopsProcess(t *testing.T) {
 	s := NewSupervisor(script(t, `trap 'exit 0' TERM; while :; do sleep 1; done`), 100*time.Millisecond, 40*time.Millisecond)
 	err := s.Start(context.Background(), Options{Model: "model", Port: 1})
