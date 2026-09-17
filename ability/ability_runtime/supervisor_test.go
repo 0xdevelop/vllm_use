@@ -259,6 +259,29 @@ func TestRuntimeLogsDrainAndBoundOversizedLines(t *testing.T) {
 	}
 }
 
+func TestRuntimeLogsBoundCumulativeBytesAndKeepNewest(t *testing.T) {
+	s := NewSupervisor("vllm", time.Second, time.Second)
+	cmd := &exec.Cmd{}
+	s.cmd = cmd
+	line := strings.Repeat("x", maxRuntimeLogLineBytes)
+	for i := 0; i < maxRuntimeLogBytes/maxRuntimeLogLineBytes+2; i++ {
+		s.appendLog(cmd, line, false)
+	}
+	s.appendLog(cmd, "newest", false)
+
+	logs := s.State().Logs
+	total := 0
+	for _, value := range logs {
+		total += len(value)
+	}
+	if total > maxRuntimeLogBytes {
+		t.Fatalf("runtime logs retained %d bytes, limit %d", total, maxRuntimeLogBytes)
+	}
+	if len(logs) == 0 || logs[len(logs)-1] != "newest" {
+		t.Fatalf("newest runtime log was not retained: count=%d", len(logs))
+	}
+}
+
 func TestSupervisorDrainsOversizedProcessOutput(t *testing.T) {
 	binary := script(t, `dd if=/dev/zero bs=1048576 count=5 2>/dev/null | tr '\000' x; printf '\nafter\n'; trap 'exit 0' TERM; while :; do sleep 1; done`)
 	s := NewSupervisor(binary, time.Second, time.Second)

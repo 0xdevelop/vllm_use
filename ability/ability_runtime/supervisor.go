@@ -33,6 +33,7 @@ const (
 	Failed   Status = "failed"
 
 	maxRuntimeLogLineBytes    = 64 << 10
+	maxRuntimeLogBytes        = 4 << 20
 	runtimeLogTruncatedSuffix = "… [truncated]"
 	defaultKillWait           = 5 * time.Second
 )
@@ -267,6 +268,17 @@ func (s *Supervisor) appendLog(cmd *exec.Cmd, line string, truncated bool) {
 	if len(s.state.Logs) > 1000 {
 		s.state.Logs = append([]string(nil), s.state.Logs[len(s.state.Logs)-1000:]...)
 	}
+	for logBytes(s.state.Logs) > maxRuntimeLogBytes {
+		s.state.Logs = append([]string(nil), s.state.Logs[1:]...)
+	}
+}
+
+func logBytes(logs []string) int {
+	total := 0
+	for _, line := range logs {
+		total += len(line)
+	}
+	return total
 }
 func (s *Supervisor) wait(cmd *exec.Cmd, logsDone <-chan struct{}) {
 	e := cmd.Wait()

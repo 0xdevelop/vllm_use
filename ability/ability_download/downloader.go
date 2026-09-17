@@ -55,6 +55,7 @@ const (
 	Canceled  State = "canceled"
 
 	maxDownloadLogLineBytes    = 64 << 10
+	maxDownloadLogBytes        = 4 << 20
 	downloadLogTruncatedSuffix = "… [truncated]"
 	maxDownloadIDBytes         = 128
 	downloadIDPattern          = `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`
@@ -417,6 +418,14 @@ func (d *Downloader) jobCopy(j *Job) *Job {
 	return &response
 }
 
+func downloadLogBytes(logs []string) int {
+	total := 0
+	for _, line := range logs {
+		total += len(line)
+	}
+	return total
+}
+
 var pct = regexp.MustCompile(`([0-9]{1,3}(?:\.[0-9]+)?)%`)
 var downloadID = regexp.MustCompile(downloadIDPattern)
 
@@ -488,6 +497,9 @@ func (d *Downloader) appendLogLine(j *Job, line, progressTail, secret string, tr
 	j.Logs = append(j.Logs, line)
 	if len(j.Logs) > d.maxLogs {
 		j.Logs = append([]string(nil), j.Logs[len(j.Logs)-d.maxLogs:]...)
+	}
+	for downloadLogBytes(j.Logs) > maxDownloadLogBytes {
+		j.Logs = append([]string(nil), j.Logs[1:]...)
 	}
 	matches := pct.FindAllStringSubmatch(progressTail, -1)
 	if len(matches) > 0 {
@@ -750,6 +762,10 @@ func (d *Downloader) restore() error {
 				_ = rows.Close()
 				return fmt.Errorf("decode persisted download %q: invalid log line", j.ID)
 			}
+		}
+		if downloadLogBytes(j.Logs) > maxDownloadLogBytes {
+			_ = rows.Close()
+			return fmt.Errorf("decode persisted download %q: logs exceed cumulative byte retention", j.ID)
 		}
 		if started != nil {
 			v, parseErr := time.Parse(time.RFC3339Nano, *started)

@@ -565,6 +565,27 @@ func TestDownloadDrainsAndBoundsOversizedOutputLine(t *testing.T) {
 	}
 }
 
+func TestDownloadLogsBoundCumulativeBytesAndKeepNewest(t *testing.T) {
+	d := NewWithOptions("hf", &fakeRunner{cmd: &fakeCmd{}}, 1, 1000)
+	j := &Job{ID: "bounded-logs"}
+	line := strings.Repeat("x", maxDownloadLogLineBytes)
+	for i := 0; i < maxDownloadLogBytes/maxDownloadLogLineBytes+2; i++ {
+		d.appendLogLine(j, line, "", "", false)
+	}
+	d.appendLogLine(j, "newest", "", "", false)
+
+	total := 0
+	for _, value := range j.Logs {
+		total += len(value)
+	}
+	if total > maxDownloadLogBytes {
+		t.Fatalf("download logs retained %d bytes, limit %d", total, maxDownloadLogBytes)
+	}
+	if len(j.Logs) == 0 || j.Logs[len(j.Logs)-1] != "newest" {
+		t.Fatalf("newest download log was not retained: count=%d", len(j.Logs))
+	}
+}
+
 func TestDownloadBoundsPersistedHostError(t *testing.T) {
 	st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
 	if err != nil {
@@ -1077,6 +1098,34 @@ func TestRestoreRejectsCorruptPersistedDownloadMetadata(t *testing.T) {
 				t.Fatal("corrupt download was published in memory")
 			}
 		})
+	}
+}
+
+func TestRestoreRejectsExcessCumulativeDownloadLogBytes(t *testing.T) {
+	st, err := sqlite.Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	logs := make([]string, maxDownloadLogBytes/maxDownloadLogLineBytes+1)
+	for i := range logs {
+		logs[i] = strings.Repeat("x", maxDownloadLogLineBytes)
+	}
+	encoded, err := json.Marshal(logs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err = st.DB.Exec(`INSERT INTO downloads(id,repository,revision,destination,state,progress,error,logs,finished_at,created_at,updated_at) VALUES('job','org/model','main','/models/job','succeeded',100,'',?,?,?,?)`, string(encoded), now, now, now); err != nil {
+		t.Fatal(err)
+	}
+
+	d := NewWithOptions("hf", &fakeRunner{cmd: &fakeCmd{}}, 1, len(logs)+1)
+	if err = d.SetStore(st); err == nil || !strings.Contains(err.Error(), "cumulative byte retention") {
+		t.Fatalf("cumulative log restore error = %v", err)
+	}
+	if len(d.List()) != 0 {
+		t.Fatal("download with excessive persisted logs was published in memory")
 	}
 }
 
